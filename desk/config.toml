@@ -43,3 +43,7 @@ nickname_candidates = ["Grace", "Linus"]
 
 [projects."/home/hongdp/Workspace/codex-deskd"]
 trust_level = "trusted"
+
+[hooks.state."/home/hongdp/Workspace/codex-deskd/desk/hooks.json:pre_tool_use:0:0"]
+trusted_hash = "sha256:2340746619d7ca7aad00fe88f4d073e430a07c431bd8875ed41db2a32f7a3893"
+enabled = true
