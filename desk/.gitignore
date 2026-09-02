@@ -13,3 +13,4 @@ installation_id
 bin/codex
 bin/codex-code-mode-host
 thread-writer-locks/
+.credentials.json

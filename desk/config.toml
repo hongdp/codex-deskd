@@ -5,6 +5,7 @@ model_reasoning_effort = "medium"
 approval_policy = "never"          # headless desk: no human approval prompts
 approvals_reviewer = "auto_review" # escalated approvals go to the Guardian reviewer
 sandbox_mode = "workspace-write"
+mcp_oauth_credentials_store = "file"  # headless host: CODEX_HOME/.credentials.json (no keyring)
 
 [sandbox_workspace_write]
 network_access = true
