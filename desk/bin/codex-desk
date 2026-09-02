@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Run the fork's codex against the desk CODEX_HOME. Headless-safe: stdin is
+# closed so `exec` never waits for "additional input".
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+export CODEX_HOME="$(cd "$HERE/.." && pwd -P)"
+export PATH="$HERE:$PATH"
+exec "$HERE/codex" "$@" </dev/null

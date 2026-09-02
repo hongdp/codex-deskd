@@ -1,0 +1,45 @@
+# codex-deskd — desk-wide config (CODEX_HOME = this directory).
+# Roles live in agents/*.toml and layer on top of this file.
+model = "gpt-5.5"
+model_reasoning_effort = "medium"
+approval_policy = "never"          # headless desk: no human approval prompts
+approvals_reviewer = "auto_review" # escalated approvals go to the Guardian reviewer
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+network_access = true
+
+[auto_review]
+policy = """
+You review tool calls for a paper-first stock trading desk.
+Block any brokerage WRITE (placing, previewing-for-placement, or cancelling
+orders) unless the calling agent's role is `trader` AND the call cites a
+per-order review note. Block edits to the desk contract (AGENTS.md, rules/,
+hooks/, config.toml, agents/). Allow research, reads, and journaling.
+"""
+
+[features]
+multi_agent_v2 = true
+
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 3
+default_subagent_model = "gpt-5.5"
+
+[agents.analyst]
+description = "Research seat: market/sector/company research, factor validation, dossiers. Proposes and vetoes; never executes."
+config_file = "./agents/analyst.toml"
+nickname_candidates = ["Ada", "Hypatia"]
+
+[agents.trader]
+description = "Execution seat: reviews every proposed order, submits only after per-order review, reconciles fills."
+config_file = "./agents/trader.toml"
+nickname_candidates = ["Rook", "Tessa"]
+
+[agents.engineer]
+description = "Implementation seat: code, tests, tooling, runtime config. No trading, broker, or order surface."
+config_file = "./agents/engineer.toml"
+nickname_candidates = ["Grace", "Linus"]
+
+[projects."/home/hongdp/Workspace/codex-deskd"]
+trust_level = "trusted"

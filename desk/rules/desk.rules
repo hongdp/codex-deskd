@@ -1,0 +1,27 @@
+# codex-deskd execpolicy — shell-command gates shared by every role.
+# Order placement is an MCP tool, not a shell command: it is gated by the
+# per-role MCP allow-lists, the Guardian policy, and hooks/skill_wall.py.
+
+prefix_rule(
+    pattern = ["git", ["push", "merge"]],
+    decision = "forbidden",
+    justification = "Agents never push or merge; the supervisor merges PRs.",
+    match = [["git", "push"], "git push origin main", ["git", "merge", "main"]],
+    not_match = [["git", "status"], "git log --oneline", ["git", "commit", "-m", "x"]],
+)
+
+prefix_rule(
+    pattern = ["rm", ["-rf", "-r", "-fr"]],
+    decision = "prompt",
+    justification = "Recursive deletes escalate to the Guardian reviewer.",
+    match = ["rm -rf build", ["rm", "-r", "tmp"]],
+    not_match = ["rm file.txt", ["ls", "-rf"]],
+)
+
+prefix_rule(
+    pattern = [["sudo", "su", "doas"]],
+    decision = "forbidden",
+    justification = "No privilege escalation from a desk seat.",
+    match = ["sudo systemctl restart x", ["su", "-"]],
+    not_match = ["echo sudo"],
+)

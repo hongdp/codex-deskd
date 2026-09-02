@@ -1,0 +1,10 @@
+# Ubuntu 24.04 restricts unprivileged user namespaces (apparmor_restrict_unprivileged_userns=1).
+# Codex's bubblewrap sandbox needs them. Install with:
+#   sudo install -m 0644 desk/system/apparmor-codex-desk /etc/apparmor.d/codex-desk
+#   sudo apparmor_parser -r /etc/apparmor.d/codex-desk
+abi <abi/4.0>,
+include <tunables/global>
+profile codex-desk /home/hongdp/Workspace/codex-deskd/codex-rs/target/release/codex flags=(unconfined) {
+  userns,
+  include if exists <local/codex-desk>
+}
