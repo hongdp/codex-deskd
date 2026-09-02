@@ -2,6 +2,8 @@
 # Run the fork's codex against the desk CODEX_HOME. Headless-safe: stdin is
 # closed so `exec` never waits for "additional input".
 set -euo pipefail
+# NOTE: never add --ephemeral for multi-agent turns — an ephemeral root thread is
+# not registered, so spawn_agent fails with "no thread with id" (verified 2026-09-02).
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 export CODEX_HOME="$(cd "$HERE/.." && pwd -P)"
 export PATH="$HERE:$PATH"
