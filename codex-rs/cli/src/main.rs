@@ -1087,6 +1087,16 @@ async fn cli_main(
         profile_v2_for_subcommand(&interactive, subcommand)?;
     }
 
+    // Desk: start the in-process Responses->Gemini wire shim when configured.
+    // It binds before any subcommand runs so a provider pointing at it is
+    // reachable from the first request; a bound port means a sibling serves it.
+    if let Ok(codex_home) = find_codex_home()
+        && let Some(shim) = codex_desk_shim::ShimConfig::load(&codex_home)
+        && let Err(err) = codex_desk_shim::start(shim).await
+    {
+        tracing::warn!("desk-shim: not started: {err}");
+    }
+
     let open_agents_overview = matches!(&subcommand, Some(Subcommand::Agents(_)));
     match subcommand {
         None | Some(Subcommand::Agents(_)) => {

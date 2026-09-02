@@ -53,6 +53,7 @@ members = [
     "exec",
     "file-system",
     "exec-server-protocol",
+    "desk-shim",
     "exec-server",
     "exec-server/tests/support",
     "execpolicy",
@@ -201,6 +202,7 @@ codex-diagnostics = { path = "diagnostics" }
 codex-exec = { path = "exec" }
 codex-file-system = { path = "file-system" }
 codex-exec-server-protocol = { path = "exec-server-protocol" }
+codex-desk-shim = { path = "desk-shim" }
 codex-exec-server = { path = "exec-server" }
 codex-exec-server-test-support = { path = "exec-server/tests/support" }
 codex-execpolicy = { path = "execpolicy" }

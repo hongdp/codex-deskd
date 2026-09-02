@@ -43,6 +43,7 @@ codex-core-plugins = { workspace = true }
 codex-history = { workspace = true }
 codex-home = { workspace = true }
 codex-http-client = { workspace = true }
+codex-desk-shim = { workspace = true }
 codex-exec = { workspace = true }
 codex-exec-server = { workspace = true }
 codex-execpolicy = { workspace = true }

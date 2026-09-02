@@ -56,8 +56,13 @@ trust_level = "trusted"
 trusted_hash = "sha256:2340746619d7ca7aad00fe88f4d073e430a07c431bd8875ed41db2a32f7a3893"
 enabled = true
 
-# Local wire adapter (desk/shim/responses_gemini.py) — Gemini behind the Responses API.
-# Start it first:  python3 desk/shim/responses_gemini.py --port 8397
+# In-process wire adapter (codex-rs/desk-shim) — Gemini behind the Responses API.
+# The CLI binds it at startup when [desk_shim] is present; the Python
+# desk/shim/responses_gemini.py is the reference implementation / fixture tool.
+[desk_shim]
+port = 8397
+gemini_key_file = "/home/hongdp/Workspace/codex-deskd/keys/gemini"
+
 # Use per role:    model_provider = "gemini"  +  model = "gemini-3.1-pro-preview"
 [model_providers.gemini]
 name = "Gemini via local shim"
