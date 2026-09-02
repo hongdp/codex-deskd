@@ -3,3 +3,12 @@ log/
 *.sqlite*
 sessions/
 proxy/
+cache/
+plugins/
+skills/
+tmp/
+models_cache.json
+installation_id
+.sandbox_migration
+bin/codex
+bin/codex-code-mode-host
