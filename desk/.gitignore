@@ -12,3 +12,4 @@ installation_id
 .sandbox_migration
 bin/codex
 bin/codex-code-mode-host
+thread-writer-locks/
