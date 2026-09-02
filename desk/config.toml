@@ -49,6 +49,19 @@ nickname_candidates = ["Grace", "Linus"]
 [projects."/home/hongdp/Workspace/codex-deskd"]
 trust_level = "trusted"
 
+[projects."/tmp/claude-1000/-home-hongdp-Workspace-parlay/075569ff-73b4-4765-bebb-9d429d13e66d/scratchpad/wd"]
+trust_level = "trusted"
+
 [hooks.state."/home/hongdp/Workspace/codex-deskd/desk/hooks.json:pre_tool_use:0:0"]
 trusted_hash = "sha256:2340746619d7ca7aad00fe88f4d073e430a07c431bd8875ed41db2a32f7a3893"
 enabled = true
+
+# Local wire adapter (desk/shim/responses_gemini.py) — Gemini behind the Responses API.
+# Start it first:  python3 desk/shim/responses_gemini.py --port 8397
+# Use per role:    model_provider = "gemini"  +  model = "gemini-3.1-pro-preview"
+[model_providers.gemini]
+name = "Gemini via local shim"
+base_url = "http://127.0.0.1:8397/v1"
+wire_api = "responses"
+request_max_retries = 2
+stream_max_retries = 2
