@@ -18,6 +18,10 @@ per-order review note. Block edits to the desk contract (AGENTS.md, rules/,
 hooks/, config.toml, agents/). Allow research, reads, and journaling.
 """
 
+[mcp_servers.robinhood-trading]
+url = "https://agent.robinhood.com/mcp/trading"
+enabled = false   # roles opt in; login once with: codex-desk mcp login robinhood-trading
+
 [features]
 multi_agent_v2 = true
 
