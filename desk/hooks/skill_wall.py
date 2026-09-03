@@ -36,4 +36,3 @@ if short in ORDER_TOOLS and role != "trader":
     # Allow = say nothing. Codex accepts permissionDecision:allow only together with
     # updatedInput; a bare allow is reported as "unsupported" and fails open.
     return 0
-                                         "permissionDecision": "allow"}}))
