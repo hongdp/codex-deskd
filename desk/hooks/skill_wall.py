@@ -33,6 +33,6 @@ short = tool.rsplit("__", 1)[-1]
 if short in ORDER_TOOLS and role != "trader":
     deny(f"{role} has no order surface ({short} is trader-only)")
 
-    # Allow = say nothing. Codex accepts permissionDecision:allow only together with
-    # updatedInput; a bare allow is reported as "unsupported" and fails open.
-    return 0
+# Allow = say nothing. Codex accepts permissionDecision:allow only together with
+# updatedInput; a bare allow is reported as "unsupported" and fails open.
+sys.exit(0)
