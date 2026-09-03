@@ -7,4 +7,10 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 export CODEX_HOME="$(cd "$HERE/.." && pwd -P)"
 export PATH="$HERE:$PATH"
-exec "$HERE/codex" "$@" </dev/null
+# Headless callers (cron, pipes) must not leave stdin open or `codex exec` blocks
+# reading it; an interactive terminal keeps its TTY so the TUI gets keyboard input.
+if [ -t 0 ]; then
+  exec "$HERE/codex" "$@"
+else
+  exec "$HERE/codex" "$@" </dev/null
+fi
