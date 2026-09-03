@@ -9,8 +9,8 @@ export CODEX_HOME="$(cd "$HERE/.." && pwd -P)"
 export PATH="$HERE:$PATH"
 # Headless callers (cron, pipes) must not leave stdin open or `codex exec` blocks
 # reading it; an interactive terminal keeps its TTY so the TUI gets keyboard input.
-if [ -t 0 ]; then
-  exec "$HERE/codex" "$@"
-else
+# Only `exec` gets the redirect: app-server / mcp-server speak JSON-RPC on stdin.
+if [ ! -t 0 ] && [ "${1:-}" = "exec" ]; then
   exec "$HERE/codex" "$@" </dev/null
 fi
+exec "$HERE/codex" "$@"

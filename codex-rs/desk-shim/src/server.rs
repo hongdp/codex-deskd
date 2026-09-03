@@ -169,10 +169,19 @@ async fn models(st: Arc<Shared>, req: Request) -> Response {
     let extra = extra_models(&st.config).await;
     let mut headers = HeaderMap::new();
     let mut catalog = json!({ "models": [] });
+    // Always fetch a full catalog (a 304 could not be merged) and tag the etag
+    // so Codex's cache is keyed to the merged list, not the upstream one.
+    let mut parts = parts;
+    parts.headers.remove(header::IF_NONE_MATCH);
     match forward(&st, &parts, body).await {
         Ok(resp) if resp.status().is_success() => {
             for (name, value) in resp.headers() {
-                if name.as_str().starts_with("x-") {
+                if name.as_str() == "x-models-etag" {
+                    let tagged = format!("{}-desk{}", value.to_str().unwrap_or(""), extra.len());
+                    if let Ok(v) = HeaderValue::from_str(&tagged) {
+                        headers.append(name.clone(), v);
+                    }
+                } else if name.as_str().starts_with("x-") {
                     headers.append(name.clone(), value.clone());
                 }
             }
