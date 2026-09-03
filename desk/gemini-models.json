@@ -5,7 +5,7 @@
    "prefer_websockets": false,
    "support_verbosity": false,
    "default_verbosity": "low",
-   "apply_patch_tool_type": "function",
+   "apply_patch_tool_type": "freeform",
    "web_search_tool_type": "text",
    "input_modalities": [
     "text"
@@ -108,7 +108,7 @@
    "prefer_websockets": false,
    "support_verbosity": false,
    "default_verbosity": "low",
-   "apply_patch_tool_type": "function",
+   "apply_patch_tool_type": "freeform",
    "web_search_tool_type": "text",
    "input_modalities": [
     "text"
@@ -211,7 +211,7 @@
    "prefer_websockets": false,
    "support_verbosity": false,
    "default_verbosity": "low",
-   "apply_patch_tool_type": "function",
+   "apply_patch_tool_type": "freeform",
    "web_search_tool_type": "text",
    "input_modalities": [
     "text"
