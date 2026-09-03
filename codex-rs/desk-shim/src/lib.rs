@@ -58,10 +58,17 @@ impl ShimConfig {
         let raw = std::fs::read_to_string(codex_home.join("config.toml")).ok()?;
         let value: toml::Value = toml::from_str(&raw).ok()?;
         let table = value.get("desk_shim")?.as_table()?;
-        let port = table
-            .get("port")
-            .and_then(toml::Value::as_integer)
-            .and_then(|p| u16::try_from(p).ok())
+        // DESK_SHIM_PORT wins over the table so a test run can use a private
+        // shim next to a long-lived TUI (pair it with a `-c model_providers.<id>.base_url` override).
+        let port = std::env::var("DESK_SHIM_PORT")
+            .ok()
+            .and_then(|v| v.trim().parse::<u16>().ok())
+            .or_else(|| {
+                table
+                    .get("port")
+                    .and_then(toml::Value::as_integer)
+                    .and_then(|p| u16::try_from(p).ok())
+            })
             .unwrap_or(DEFAULT_PORT);
         let resolve = |key: &str| -> Option<PathBuf> {
             let s = table.get(key)?.as_str()?;
@@ -103,7 +110,11 @@ pub async fn start(config: ShimConfig) -> Result<()> {
     let listener = match TcpListener::bind(&addr).await {
         Ok(l) => l,
         Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => {
-            info!("desk-shim: {addr} already bound; assuming a sibling process serves it");
+            warn!(
+                "desk-shim: {addr} already bound by another codex process; using its shim. \
+                 If that process predates this binary its shim is stale: restart it, \
+                 or set DESK_SHIM_PORT plus a model_providers base_url override."
+            );
             return Ok(());
         }
         Err(err) => return Err(err).with_context(|| format!("desk-shim: bind {addr}")),

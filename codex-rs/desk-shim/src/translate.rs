@@ -251,6 +251,29 @@ struct Tools {
     uses_search: bool,
 }
 
+/// Map each inner tool of a `namespace` tool back to its namespace, so calls
+/// can be returned with the `namespace` field Codex's registry requires.
+pub fn tool_namespaces(req: &Value) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let list = req.get("tools").and_then(Value::as_array);
+    for tool in list.into_iter().flatten() {
+        if tool.get("type").and_then(Value::as_str) != Some("namespace") {
+            continue;
+        }
+        let Some(ns) = tool.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let inner = tool.get("tools").and_then(Value::as_array);
+        for t in inner.into_iter().flatten() {
+            if let Some(name) = t.get("name").and_then(Value::as_str) {
+                map.entry(name.to_string())
+                    .or_insert_with(|| ns.to_string());
+            }
+        }
+    }
+    map
+}
+
 fn build_tools(req: &Value, sanitized: bool) -> Tools {
     let mut decls: Vec<Value> = Vec::new();
     let mut uses_search = false;
@@ -384,6 +407,8 @@ pub struct Translator {
     sig: Option<String>,
     /// Number of visible output items emitted (for the caller's retry logic).
     pub items_emitted: u64,
+    /// Inner tool name -> namespace, from the request's `namespace` tools.
+    namespaces: std::collections::HashMap<String, String>,
 }
 
 impl Translator {
@@ -397,7 +422,16 @@ impl Translator {
             buf: String::new(),
             sig: None,
             items_emitted: 0,
+            namespaces: Default::default(),
         }
+    }
+
+    pub fn with_namespaces(
+        mut self,
+        namespaces: std::collections::HashMap<String, String>,
+    ) -> Self {
+        self.namespaces = namespaces;
+        self
     }
 
     fn event(&mut self, kind: &str, mut fields: Value) -> Value {
@@ -523,14 +557,24 @@ impl Translator {
         if let Some(fc) = part.get("functionCall") {
             self.close(&mut out);
             let args = fc.get("args").cloned().unwrap_or(json!({}));
-            let item = json!({
+            let name = fc.get("name").and_then(Value::as_str).unwrap_or("");
+            let mut item = json!({
                 "type": "function_call",
                 "id": format!("fc_{}", uuid::Uuid::new_v4().simple()),
                 "call_id": format!("call_{}", &uuid::Uuid::new_v4().simple().to_string()[..24]),
-                "name": fc.get("name").cloned().unwrap_or(json!("")),
+                "name": name,
                 "arguments": args.to_string(),
                 "status": "completed",
+                // Gemini never encrypts tool arguments. An explicit empty list is
+                // what makes Codex treat spawn/send payloads as plaintext; absent,
+                // it assumes backend-encrypted args and the child cannot decode them.
+                "encrypted_function_args": [],
             });
+            if let Some(ns) = self.namespaces.get(name)
+                && let Some(obj) = item.as_object_mut()
+            {
+                obj.insert("namespace".into(), json!(ns));
+            }
             self.item_added_done(item, &mut out);
             if sig.is_some() {
                 self.blob_item(1, vec![part.clone()], &mut out);
@@ -759,6 +803,36 @@ mod tests {
         assert_eq!(parts[1]["toolResponse"]["id"], "c1");
         assert_eq!(parts[2]["text"], "answer");
         assert_eq!(parts[2]["thoughtSignature"], "S3");
+    }
+
+    #[test]
+    fn namespaced_tool_calls_carry_the_namespace_back() {
+        let req = json!({ "tools": [
+            { "type": "namespace", "name": "collaboration", "tools": [
+                { "type": "function", "name": "spawn_agent", "parameters": {"type":"object"} } ] },
+            { "type": "function", "name": "shell", "parameters": {"type":"object"} } ]});
+        let ns = tool_namespaces(&req);
+        assert_eq!(
+            ns.get("spawn_agent").map(String::as_str),
+            Some("collaboration")
+        );
+        assert!(!ns.contains_key("shell"));
+        let mut tr = Translator::new("r").with_namespaces(ns);
+        let ev = tr.on_part(
+            &json!({ "functionCall": { "name": "spawn_agent", "args": { "task": "x" } } }),
+        );
+        let fc = ev
+            .iter()
+            .find(|e| e["item"]["type"] == "function_call")
+            .unwrap();
+        assert_eq!(fc["item"]["namespace"], "collaboration");
+        assert_eq!(fc["item"]["encrypted_function_args"], json!([]));
+        let ev = tr.on_part(&json!({ "functionCall": { "name": "shell", "args": {} } }));
+        let fc = ev
+            .iter()
+            .find(|e| e["item"]["type"] == "function_call")
+            .unwrap();
+        assert!(fc["item"].get("namespace").is_none());
     }
 
     #[test]

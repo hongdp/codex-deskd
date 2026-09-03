@@ -320,7 +320,8 @@ async fn run_turn(
     tx: mpsc::Sender<Result<Bytes, std::convert::Infallible>>,
 ) {
     let response_id = format!("resp_{}", uuid::Uuid::new_v4().simple());
-    let mut tr = Translator::new(response_id.clone());
+    let mut tr = Translator::new(response_id.clone())
+        .with_namespaces(crate::translate::tool_namespaces(&req));
     let send = |ev: Value| {
         let tx = tx.clone();
         async move {
