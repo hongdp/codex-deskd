@@ -32,11 +32,22 @@ use tracing::warn;
 
 pub const DEFAULT_PORT: u16 = 8397;
 
+pub const DEFAULT_UPSTREAM: &str = "https://chatgpt.com";
+pub const DEFAULT_GEMINI_PREFIX: &str = "gemini-";
+
 #[derive(Debug, Clone)]
 pub struct ShimConfig {
     pub port: u16,
     pub gemini_key_file: Option<PathBuf>,
     pub dump_dir: Option<PathBuf>,
+    /// Extra catalog entries (`{"models":[...]}`) appended to the upstream
+    /// `/models` response so pickers list the translated models.
+    pub models_json: Option<PathBuf>,
+    /// Origin that receives every request not handled by the translator,
+    /// path preserved (the provider base_url is `/backend-api/codex`).
+    pub upstream: String,
+    /// Model slugs with this prefix are translated to Gemini.
+    pub gemini_prefix: String,
 }
 
 impl ShimConfig {
@@ -61,10 +72,22 @@ impl ShimConfig {
                 codex_home.join(p)
             })
         };
+        let string = |key: &str, default: &str| -> String {
+            table
+                .get(key)
+                .and_then(toml::Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| default.to_string())
+        };
         Some(Self {
             port,
             gemini_key_file: resolve("gemini_key_file"),
             dump_dir: resolve("dump_dir"),
+            models_json: resolve("models_json"),
+            upstream: string("upstream", DEFAULT_UPSTREAM)
+                .trim_end_matches('/')
+                .to_string(),
+            gemini_prefix: string("gemini_prefix", DEFAULT_GEMINI_PREFIX),
         })
     }
 

@@ -1,6 +1,7 @@
 # codex-deskd — desk-wide config (CODEX_HOME = this directory).
 # Roles live in agents/*.toml and layer on top of this file.
 model = "gpt-5.5"
+model_provider = "desk"   # the in-process shim: proxies to ChatGPT, translates gemini-*
 model_reasoning_effort = "medium"
 approval_policy = "never"          # headless desk: no human approval prompts
 approvals_reviewer = "auto_review" # escalated approvals go to the Guardian reviewer
@@ -56,17 +57,20 @@ trust_level = "trusted"
 trusted_hash = "sha256:2340746619d7ca7aad00fe88f4d073e430a07c431bd8875ed41db2a32f7a3893"
 enabled = true
 
-# In-process wire adapter (codex-rs/desk-shim) — Gemini behind the Responses API.
-# The CLI binds it at startup when [desk_shim] is present; the Python
-# desk/shim/responses_gemini.py is the reference implementation / fixture tool.
+# In-process wire adapter (codex-rs/desk-shim): the desk's single provider.
+# The CLI binds it at startup. Requests for `gemini-*` models are translated to
+# the Gemini API; everything else is proxied verbatim to the ChatGPT backend with
+# the caller's own auth headers, so /model can switch vendors mid-session and the
+# /models catalog is the upstream list plus desk/gemini-models.json.
+[model_providers.desk]
+name = "OpenAI"
+base_url = "http://127.0.0.1:8397/backend-api/codex"
+wire_api = "responses"
+requires_openai_auth = true
+request_max_retries = 2
+stream_max_retries = 2
+
 [desk_shim]
 port = 8397
 gemini_key_file = "/home/hongdp/Workspace/codex-deskd/keys/gemini"
-
-# Use per role:    model_provider = "gemini"  +  model = "gemini-3.1-pro-preview"
-[model_providers.gemini]
-name = "Gemini via local shim"
-base_url = "http://127.0.0.1:8397/v1"
-wire_api = "responses"
-request_max_retries = 2
-stream_max_retries = 2
+models_json = "/home/hongdp/Workspace/codex-deskd/desk/gemini-models.json"

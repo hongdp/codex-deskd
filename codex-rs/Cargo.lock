@@ -3011,6 +3011,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "eventsource-stream",
+ "flate2",
  "futures",
  "reqwest 0.12.28",
  "serde",
@@ -3020,6 +3021,7 @@ dependencies = [
  "toml 0.9.11+spec-1.1.0",
  "tracing",
  "uuid",
+ "zstd",
 ]
 
 [[package]]

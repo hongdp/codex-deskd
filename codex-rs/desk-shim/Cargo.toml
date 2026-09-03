@@ -18,6 +18,7 @@ axum = { workspace = true, default-features = false, features = ["http1", "json"
 base64 = { workspace = true }
 bytes = { workspace = true }
 eventsource-stream = { workspace = true }
+flate2 = { workspace = true }
 futures = { workspace = true }
 reqwest = { workspace = true, features = ["json", "stream", "rustls-tls"] }
 serde = { workspace = true, features = ["derive"] }
@@ -27,6 +28,7 @@ tokio-stream = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
+zstd = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
