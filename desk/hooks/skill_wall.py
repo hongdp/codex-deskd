@@ -8,7 +8,9 @@ thread) and `cwd`; exit 2 + stderr reason is a hard block on both harnesses.
 """
 import json, os, re, sys
 
-CONTRACT = re.compile(r"(^|/)desk/(AGENTS\.md|config\.toml|agents/|rules/|hooks/)")
+# Any mention of a contract path, whether absolute, relative, quoted or after a
+# shell operator: the char before `desk/` must not be part of another name.
+CONTRACT = re.compile(r"(^|[^\w.-])desk/(AGENTS\.md|config\.toml|agents/|rules/|hooks/)")
 ORDER_TOOLS = {"place_equity_order", "place_option_order", "place_crypto_order",
                "cancel_equity_order", "cancel_option_order", "cancel_crypto_order",
                "exercise_option", "review_equity_order", "review_option_order"}
