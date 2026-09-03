@@ -97,3 +97,5 @@ __pycache__/
 
 # local API keys — never commit
 keys/
+desk/watch/state.json
+desk/watch/log/

@@ -1,0 +1,39 @@
+# Price levels the watch service guards. Paper desk: a breach WAKES the trader
+# thread with a structured message; the trader answers with a proposal only.
+#
+# side = "below" fires when last price < price; "above" when last price > price.
+# The dedup key carries the distance past the level in 1% steps (parlay's
+# sentinel cadence): a name resting on its line speaks once, a deepening
+# breach speaks again each further 1%.
+
+[[level]]
+id = "nvda-stop"
+ticker = "NVDA"
+kind = "stop"
+side = "below"
+price = 215.00
+note = "Paper starter from 2026-09-02; stop under the 08-28 swing low."
+
+[[level]]
+id = "nvda-target"
+ticker = "NVDA"
+kind = "target"
+side = "above"
+price = 232.00
+note = "First take-profit zone; review trim vs. trail."
+
+[[level]]
+id = "mrk-entry"
+ticker = "MRK"
+kind = "entry"
+side = "below"
+price = 148.00
+note = "Analyst thesis 2026-09-02 (Keytruda durability); entry only on a pullback."
+
+[[level]]
+id = "mrk-target"
+ticker = "MRK"
+kind = "target"
+side = "above"
+price = 156.00
+note = "Thesis first target."
