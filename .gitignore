@@ -99,3 +99,6 @@ __pycache__/
 keys/
 desk/watch/state.json
 desk/watch/log/
+desk/history.jsonl
+desk/session_index.jsonl
+desk/shell_snapshots/
