@@ -6,10 +6,10 @@
 //! with `wire_api = "responses"` and `base_url = "http://127.0.0.1:<port>/v1"`
 //! drives Gemini without touching the core request/SSE path.
 //!
-//! Configured by an optional `[desk_shim]` table in `$CODEX_HOME/config.toml`:
+//! Configured by `$CODEX_HOME/desk_shim.toml` (or, as a fallback, a `[desk_shim]`
+//! table in config.toml — Codex warns about unknown keys there):
 //!
 //! ```toml
-//! [desk_shim]
 //! port = 8397
 //! gemini_key_file = "/abs/path/to/key"   # or the GEMINI_API_KEY env var
 //! dump_dir = "/abs/path"                 # optional: record every request
@@ -51,13 +51,22 @@ pub struct ShimConfig {
 }
 
 impl ShimConfig {
-    /// Parse `[desk_shim]` from `$CODEX_HOME/config.toml`. Returns `None` when
-    /// the table is absent or the file is unreadable/unparseable (the shim is
+    /// Load the shim settings for this CODEX_HOME. Returns `None` when
+    /// neither source exists or parses (the shim is
     /// opt-in and must never block startup).
     pub fn load(codex_home: &Path) -> Option<Self> {
-        let raw = std::fs::read_to_string(codex_home.join("config.toml")).ok()?;
-        let value: toml::Value = toml::from_str(&raw).ok()?;
-        let table = value.get("desk_shim")?.as_table()?;
+        // Preferred: a separate `$CODEX_HOME/desk_shim.toml` (Codex warns about
+        // keys it does not know in config.toml). Fallback: a `[desk_shim]` table.
+        let own: Option<toml::Value> = std::fs::read_to_string(codex_home.join("desk_shim.toml"))
+            .ok()
+            .and_then(|raw| toml::from_str(&raw).ok());
+        let from_config: Option<toml::Value> =
+            std::fs::read_to_string(codex_home.join("config.toml"))
+                .ok()
+                .and_then(|raw| toml::from_str::<toml::Value>(&raw).ok())
+                .and_then(|v| v.get("desk_shim").cloned());
+        let value = own.or(from_config)?;
+        let table = value.as_table()?;
         // DESK_SHIM_PORT wins over the table so a test run can use a private
         // shim next to a long-lived TUI (pair it with a `-c model_providers.<id>.base_url` override).
         let port = std::env::var("DESK_SHIM_PORT")

@@ -1,0 +1,9 @@
+# codex-deskd in-process wire shim (codex-rs/desk-shim). Read by the CLI at
+# startup from $CODEX_HOME/desk_shim.toml; kept out of config.toml because Codex
+# warns about configuration keys it does not recognise.
+port = 8397
+gemini_key_file = "/home/hongdp/Workspace/codex-deskd/keys/gemini"
+models_json = "/home/hongdp/Workspace/codex-deskd/desk/gemini-models.json"
+# upstream = "https://chatgpt.com"      # origin for non-gemini traffic
+# gemini_prefix = "gemini-"             # model slugs translated to Gemini
+# dump_dir = "/abs/path"                # record every translated request
