@@ -8,10 +8,9 @@ use super::step_settings::StepSettingsUpdate;
 use super::turn_context::TurnContext;
 use crate::config::Config;
 use crate::config::ConstraintResult;
-use crate::context::GuardianNodeReplPolicy;
 use crate::exec_policy::AllowPrefixRules;
-use crate::guardian::BUNDLED_GUARDIAN_POLICY_TEMPLATE;
 use codex_features::Feature;
+use codex_prompts::ResolvedModelMessages;
 use codex_protocol::openai_models::GuardianV2ModelConfig;
 use codex_protocol::openai_models::GuardianV2TranscriptModelConfig;
 use codex_protocol::openai_models::MODEL_SPECIALTY_CYBER;
@@ -95,7 +94,7 @@ fn check_legacy_model_safety(
         return Err("the destination model has only fallback metadata".to_string());
     }
     let retained_models = [admitted, current];
-    // guardian::review::record_guardian_denial still selects its circuit-breaker
+    // The Guardian reviewer extension still selects its circuit-breaker
     // policy from the admitted model's Cyber classification.
     let destination_is_cyber =
         destination.model_specialty.as_deref() == Some(MODEL_SPECIALTY_CYBER);
@@ -107,11 +106,17 @@ fn check_legacy_model_safety(
     // TurnMetadataState pins both node REPL flags. Guardian prompt/evidence
     // construction also reads node_repl_auto_review_required from the turn.
     if retained_models.iter().any(|model| {
-        model.node_repl_auto_review_required != destination.node_repl_auto_review_required
+        model.computer_use_review_required() != destination.computer_use_review_required()
     }) {
         return Err(
             "the destination changes the admitted node REPL review requirement".to_string(),
         );
+    }
+    if retained_models
+        .iter()
+        .any(|model| model.guardian != destination.guardian)
+    {
+        return Err("the destination changes the admitted Guardian coverage".to_string());
     }
     if retained_models
         .iter()
@@ -130,7 +135,7 @@ fn check_legacy_model_safety(
         return Err("the destination changes the explicit Guardian reviewer model".to_string());
     }
 
-    if admitted_config.features.enabled(Feature::GuardianV2)
+    if (admitted_config.features.enabled(Feature::GuardianV2) || destination.guardian.is_some())
         && admitted_config.features.enabled(Feature::GuardianApproval)
     {
         // GuardianV2Extension::on_tool_start reads the parent ModelInfo from
@@ -169,45 +174,34 @@ fn check_legacy_model_safety(
     // catalog refresh. V1 uses the admitted config; V2 can use the live config.
     // An unchanged explicit reviewer override prevents both fallback paths.
     if destination.auto_review_model_override.is_none() {
-        let destination_node_repl_policy =
-            GuardianNodeReplPolicy::from_model_messages(destination.model_messages.as_ref());
-        for model in retained_models {
-            let policy = GuardianNodeReplPolicy::from_model_messages(model.model_messages.as_ref());
-            if policy != destination_node_repl_policy {
-                return Err(
-                    "the destination changes the Guardian parent-fallback node REPL policy"
-                        .to_string(),
-                );
-            }
+        let destination_model_messages = ResolvedModelMessages::from_model(destination);
+        let destination_auto_review = destination_model_messages.auto_review();
+        let retained_model_messages = retained_models.map(ResolvedModelMessages::from_model);
+        let retained_auto_review = retained_model_messages
+            .each_ref()
+            .map(ResolvedModelMessages::auto_review);
+        if retained_auto_review.iter().any(|auto_review| {
+            auto_review.node_repl_policy != destination_auto_review.node_repl_policy
+        }) {
+            return Err(
+                "the destination changes the Guardian parent-fallback node REPL policy".to_string(),
+            );
         }
         for config in [admitted_config, live_config] {
-            let destination_policy =
-                config.resolve_guardian_policy(destination.model_messages.as_ref());
-            if retained_models.iter().any(|model| {
-                config.resolve_guardian_policy(model.model_messages.as_ref()) != destination_policy
+            let destination_policy = config.resolve_guardian_policy(destination_model_messages);
+            if retained_model_messages.iter().any(|model_messages| {
+                config.resolve_guardian_policy(*model_messages) != destination_policy
             }) {
                 return Err(
                     "the destination changes the Guardian parent-fallback policy".to_string(),
                 );
             }
         }
-        let destination_template = destination
-            .model_messages
-            .as_ref()
-            .and_then(|messages| messages.auto_review.as_ref())
-            .and_then(|messages| messages.policy_template.as_deref())
-            .unwrap_or(BUNDLED_GUARDIAN_POLICY_TEMPLATE)
-            .trim_end();
-        if retained_models.iter().any(|model| {
-            model
-                .model_messages
-                .as_ref()
-                .and_then(|messages| messages.auto_review.as_ref())
-                .and_then(|messages| messages.policy_template.as_deref())
-                .unwrap_or(BUNDLED_GUARDIAN_POLICY_TEMPLATE)
-                .trim_end()
-                != destination_template
-        }) {
+        let destination_template = destination_auto_review.policy_template.trim_end();
+        if retained_auto_review
+            .iter()
+            .any(|auto_review| auto_review.policy_template.trim_end() != destination_template)
+        {
             return Err(
                 "the destination changes the Guardian parent-fallback policy template".to_string(),
             );
@@ -368,7 +362,6 @@ impl Session {
                 &constraints,
                 self.services.models_manager.as_ref(),
                 &overrides,
-                self.features.enabled(Feature::Personality),
                 self.features.enabled(Feature::FastMode),
             )
             .await

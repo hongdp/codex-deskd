@@ -98,13 +98,13 @@ pub(crate) fn render_markdown_agent_with_links_cwd_and_visualizations(
         rewritten.trusted_file_links.contains_key(destination)
             || crate::markdown_render::hide_web_link_destination(destination)
     };
-    let mut lines =
-        crate::markdown_render::render_markdown_lines_with_width_cwd_and_hidden_link_destinations(
-            &normalized,
-            width,
-            cwd,
-            &is_hidden_link_destination,
-        );
+    let mut lines = crate::markdown_render::render_streaming_markdown_lines_with_width_and_cwd(
+        &normalized,
+        width,
+        cwd,
+        &is_hidden_link_destination,
+    )
+    .lines;
     for hyperlink in lines.iter_mut().flat_map(|line| &mut line.hyperlinks) {
         if let Some(link) = rewritten.trusted_file_links.get(&hyperlink.destination) {
             hyperlink.retarget_to_trusted_file(&link.destination);
@@ -134,10 +134,20 @@ pub(crate) fn render_streaming_markdown_agent_with_links_and_cwd(
         // Fence unwrapping removes opening/closing lines. A normalized tail that is still a raw
         // suffix necessarily begins after those removed lines, so its boundary can safely be
         // mapped back to the raw source; otherwise leave the transformed block mutable.
+        rendered.pending_math_start = rendered.pending_math_start.map(|boundary| {
+            markdown_source
+                .strip_suffix(&normalized[boundary..])
+                .map_or(0, str::len)
+        });
         rendered.last_top_level_block_start = rendered
             .last_top_level_block_start
             .and_then(|boundary| markdown_source.strip_suffix(&normalized[boundary..]))
             .map(str::len);
+        rendered.mermaid_start = rendered.mermaid_start.map(|boundary| {
+            markdown_source
+                .strip_suffix(&normalized[boundary..])
+                .map_or(0, str::len)
+        });
     }
     rendered
 }
@@ -240,7 +250,7 @@ pub(crate) fn extract_copy_targets(markdown_source: &str) -> Vec<CopyTarget> {
 /// The fence unwrapping is intentionally conservative: it buffers the entire fence body before
 /// deciding, and an unclosed fence at end-of-input is re-emitted with its opening line so partial
 /// streams degrade to code display.
-fn unwrap_markdown_fences<'a>(markdown_source: &'a str) -> Cow<'a, str> {
+pub(crate) fn unwrap_markdown_fences<'a>(markdown_source: &'a str) -> Cow<'a, str> {
     // Zero-copy fast path: most messages contain no fences at all.
     if !markdown_source.contains("```") && !markdown_source.contains("~~~") {
         return Cow::Borrowed(markdown_source);

@@ -93,6 +93,7 @@ pub(super) async fn load_export_transcript(
             /*turn_cursor*/ None,
             /*item_cursor*/ None,
             /*config*/ None,
+            /*local_settings*/ None,
             HistoryHydrationScope::Complete,
         )
         .await
@@ -161,7 +162,7 @@ fn export_activity_cell(item: &ThreadItem) -> Option<PlainHistoryCell> {
                             lines.extend(raw_lines_from_source(&text.text));
                         }
                         Ok(rmcp::model::ContentBlock::Image(_)) => {
-                            lines.push("<image content>".into());
+                            lines.push("Returned image".into());
                         }
                         Ok(rmcp::model::ContentBlock::Audio(_)) => {
                             lines.push("<audio content>".into());

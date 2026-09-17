@@ -69,6 +69,7 @@ const fn context_bit(context: KeymapContext) -> u16 {
         KeymapContext::Approval => 9,
         KeymapContext::Agents => 10,
         KeymapContext::VimSearch => 11,
+        KeymapContext::Voice => 12,
     }
 }
 
@@ -231,7 +232,7 @@ struct PendingChord {
 }
 
 /// Tracks one pending two-stroke chord without buffering ordinary input.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct KeyChordMatcher {
     pending: Option<PendingChord>,
 }
@@ -397,6 +398,8 @@ fn effective_configured_binding(
 }
 
 pub(crate) fn normalize_chord_binding(binding: KeyBinding) -> KeyBinding {
+    let (key, modifiers) = binding.normalized_parts();
+    let binding = KeyBinding::new(key, modifiers);
     if binding.parts() == crate::key_hint::ctrl(KeyCode::Char('7')).parts() {
         crate::key_hint::ctrl(KeyCode::Char('/'))
     } else {
@@ -464,9 +467,10 @@ Windows. Choose a different chord and retry.",
     if matches!(prefix_key, KeyCode::Char(_))
         && !crate::key_hint::has_ctrl_or_alt(prefix_modifiers)
         && !binding.action.context.allows_plain_chord_prefix()
+        && binding.action.context != KeymapContext::Agents
     {
         return Err(format!(
-            "Invalid `{path}` = `{}`: a chord prefix outside Vim must use ctrl, \
+            "Invalid `{path}` = `{}`: a chord prefix outside Vim or the command center must use ctrl, \
 alt, or a non-character key so ordinary text input is not intercepted.",
             binding.spec
         ));
@@ -511,6 +515,7 @@ Choose a different chord and retry.",
         KeymapContext::Pager => TRANSCRIPT_BACKTRACK_RESERVED_BINDINGS,
         KeymapContext::Global
         | KeymapContext::Chat
+        | KeymapContext::Voice
         | KeymapContext::Composer
         | KeymapContext::Editor
         | KeymapContext::VimNormal

@@ -1087,6 +1087,7 @@ async fn mcp_tool_call_completion_notification_contains_truncated_large_result()
         arguments: json!({ "message": LARGE_RESPONSE_MESSAGE }),
         app_context: None,
         mcp_app_resource_uri: None,
+        mcp_app_ui: None,
         plugin_id: None,
         read_only_hint: None,
         result: Some(result),
@@ -1198,6 +1199,7 @@ async fn mcp_tool_call_hint_survives_mid_call_thread_read_and_resume() -> Result
         arguments: json!({ "message": ELICITATION_TRIGGER_MESSAGE }),
         app_context: None,
         mcp_app_resource_uri: None,
+        mcp_app_ui: None,
         plugin_id: None,
         read_only_hint: Some(true),
         result: None,
@@ -1341,9 +1343,9 @@ impl ServerHandler for ToolAppsMcpServer {
             .get("threadId")
             .and_then(|value| value.as_str())
             .unwrap_or_default();
-        let client_capabilities = context.peer.peer_info().map(|request| {
+        let client_capabilities = context.client_capabilities().map(|capabilities| {
             json!({
-                "extensions": request.capabilities.extensions.clone().unwrap_or_default(),
+                "extensions": capabilities.extensions.unwrap_or_default(),
             })
         });
 
@@ -1369,7 +1371,10 @@ impl ServerHandler for ToolAppsMcpServer {
                 // Match the execution approval emitted by the real Node REPL server.
                 approval_meta["connector_id"] = json!("node_repl");
             }
-            if let Some(sensitive_action) = self.sensitive_action {
+            if let Some(sensitive_action) = self
+                .sensitive_action
+                .or((message == "sensitive").then_some(true))
+            {
                 approval_meta["codex_sensitive_action"] = json!(sensitive_action);
             }
             let result = context
@@ -1388,6 +1393,22 @@ impl ServerHandler for ToolAppsMcpServer {
                 .map_err(|err| {
                     rmcp::ErrorData::internal_error(err.to_string(), /*data*/ None)
                 })?;
+            if matches!(result.action, ElicitationAction::Decline) {
+                return Ok(CallToolResult::error(vec![ContentBlock::text(
+                    "Tool execution was declined by Guardian.",
+                )])
+                .into());
+            }
+            if matches!(result.action, ElicitationAction::Cancel) {
+                assert_eq!(
+                    serde_json::to_value(result).expect("cancelled elicitation response"),
+                    json!({ "action": "cancel", "_meta": { "approvals_reviewer": "auto_review" } }),
+                );
+                return Ok(CallToolResult::error(vec![ContentBlock::text(
+                    "Tool execution was cancelled by Guardian.",
+                )])
+                .into());
+            }
             assert_eq!(
                 serde_json::to_value(result).expect("elicitation response"),
                 json!({

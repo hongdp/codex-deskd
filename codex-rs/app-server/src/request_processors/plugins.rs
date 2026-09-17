@@ -1,4 +1,5 @@
 use super::apps_processor::APP_READ_MAX_IDS;
+use super::config_processor::reload_user_config;
 use super::*;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_request;
@@ -1491,7 +1492,7 @@ impl PluginRequestProcessor {
         };
 
         let result = match plugins_manager
-            .install_plugin(&config.plugins_config_input(), request)
+            .install_plugin(&config.config_layer_stack, request)
             .await
         {
             Ok(result) => result,
@@ -1514,7 +1515,10 @@ impl PluginRequestProcessor {
             }
         };
 
-        self.on_effective_plugins_changed().await;
+        self.clear_plugin_related_caches();
+        reload_user_config(&self.config_manager, &self.thread_manager).await;
+        self.thread_manager.invalidate_mcp_runtimes().await;
+        self.thread_manager.refresh_hook_runtimes().await;
 
         let plugin_mcp_servers = load_configured_plugin_mcp_servers(
             result.installed_path.as_path(),
@@ -1802,7 +1806,9 @@ impl PluginRequestProcessor {
             config.cwd.to_path_buf(),
         );
         for (name, server) in plugin_mcp_servers {
-            if !server.enabled {
+            // EMA uses the account's enterprise grant, never per-plugin OAuth fallback.
+            if !server.enabled || matches!(server.auth, codex_config::types::McpServerAuth::EmaAuth)
+            {
                 continue;
             }
             if !server.is_local_environment() {

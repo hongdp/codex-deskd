@@ -12,7 +12,6 @@
 
 use crate::diff_model::FileChange;
 use crate::diff_render::create_diff_summary;
-use crate::diff_render::display_path_for;
 use crate::exec_cell::CommandOutput;
 use crate::exec_cell::OutputLinesParams;
 use crate::exec_cell::TOOL_CALL_MAX_LINES;
@@ -116,6 +115,8 @@ mod request_user_input;
 mod search;
 mod separators;
 mod session;
+mod spoken_artifacts;
+mod startup_warnings;
 
 pub(crate) use approvals::*;
 pub(crate) use base::*;
@@ -132,6 +133,7 @@ pub(crate) use request_user_input::*;
 pub(crate) use search::*;
 pub(crate) use separators::*;
 pub(crate) use session::*;
+pub(crate) use startup_warnings::StartupWarningsCell;
 
 #[cfg(test)]
 mod tests;

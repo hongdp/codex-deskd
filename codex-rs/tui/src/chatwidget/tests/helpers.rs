@@ -15,6 +15,8 @@ pub(super) async fn test_config() -> Config {
         Config::load_default_with_cli_overrides_for_codex_home(codex_home.clone(), Vec::new())
             .await
             .expect("config");
+    // Keep generic UI snapshots stable when the bundled catalog default changes.
+    config.model = Some("gpt-5.6-sol".to_string());
     config.codex_home = codex_home.abs();
     config.sqlite = codex_state::SqliteConfig::new_for_testing(codex_home.as_path().abs());
     config.log_dir = codex_home.join("log");
@@ -107,6 +109,7 @@ pub(super) fn snapshot(percent: f64) -> RateLimitSnapshot {
     RateLimitSnapshot {
         limit_id: None,
         limit_name: None,
+        normal_model_slug: None,
         primary: Some(RateLimitWindow {
             used_percent: percent.round() as i32,
             window_duration_mins: Some(60),
@@ -139,9 +142,12 @@ pub(super) fn test_session_telemetry(config: &Config, model: &str) -> SessionTel
 }
 
 pub(super) fn test_model_catalog(_config: &Config) -> Arc<ModelCatalog> {
-    Arc::new(ModelCatalog::new(
-        crate::test_support::TEST_MODEL_PRESETS.clone(),
-    ))
+    Arc::new(
+        ModelCatalog::new(crate::test_support::TEST_MODEL_PRESETS.clone())
+            .with_collaboration_modes(
+            codex_models_manager::collaboration_mode_presets::builtin_collaboration_mode_presets(),
+        ),
+    )
 }
 
 // --- Helpers for tests that need direct construction and event draining ---
@@ -184,6 +190,8 @@ pub(super) async fn make_chatwidget_manual_with_auth(
     let session_telemetry = test_session_telemetry(&cfg, resolved_model.as_str());
     let model_catalog = test_model_catalog(&cfg);
     let common = ChatWidgetInit {
+        requires_openai_auth: cfg.model_provider.requires_openai_auth,
+        local_settings: crate::local_settings::LocalSettings::from(&cfg),
         config: cfg,
         frame_requester,
         app_event_tx,
@@ -196,7 +204,6 @@ pub(super) async fn make_chatwidget_manual_with_auth(
         feedback: codex_feedback::CodexFeedback::new(),
         is_first_run: true,
         status_account_display: None,
-        runtime_model_provider_base_url: None,
         initial_plan_type: None,
         model: Some(resolved_model.clone()),
         startup_tooltip_override: None,
@@ -205,6 +212,8 @@ pub(super) async fn make_chatwidget_manual_with_auth(
         session_telemetry,
     };
     let mut widget = ChatWidget::new_with_op_target(common, super::CodexOpTarget::Direct(op_tx));
+    widget.windows_sandbox_host = crate::app::WindowsSandboxHost::Local;
+    widget.windows_sandbox_config.requirements = Some(None);
     widget.transcript.active_cell = None;
     widget.transcript.active_cell_revision = 0;
     widget.set_model(&resolved_model);
@@ -291,13 +300,23 @@ fn test_model_info(slug: &str, priority: i32, supports_fast_mode: bool) -> Model
 }
 
 pub(crate) fn set_fast_mode_test_catalog(chat: &mut ChatWidget) {
+    set_fast_mode_test_catalog_for_models(chat, "gpt-5.4", "gpt-5.2");
+}
+
+pub(crate) fn set_fast_mode_test_catalog_for_models(
+    chat: &mut ChatWidget,
+    fast_model: &str,
+    standard_model: &str,
+) {
     let models: Vec<ModelPreset> = ModelsResponse {
         models: vec![
             test_model_info(
-                "gpt-5.4", /*priority*/ 0, /*supports_fast_mode*/ true,
+                fast_model, /*priority*/ 0, /*supports_fast_mode*/ true,
             ),
             test_model_info(
-                "gpt-5.2", /*priority*/ 1, /*supports_fast_mode*/ false,
+                standard_model,
+                /*priority*/ 1,
+                /*supports_fast_mode*/ false,
             ),
         ],
     }
@@ -306,7 +325,7 @@ pub(crate) fn set_fast_mode_test_catalog(chat: &mut ChatWidget) {
     .map(Into::into)
     .collect();
 
-    chat.model_catalog = Arc::new(ModelCatalog::new(models));
+    Arc::make_mut(&mut chat.model_catalog).models = models;
 }
 
 pub(crate) async fn make_chatwidget_manual_with_sender() -> (
@@ -323,10 +342,39 @@ pub(crate) async fn make_chatwidget_manual_with_sender() -> (
 pub(super) fn drain_insert_history(
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
 ) -> Vec<Vec<ratatui::text::Line<'static>>> {
+    drain_insert_history_with(rx, |cell| cell.display_lines(/*width*/ 80))
+}
+
+pub(super) fn drain_insert_history_normalized(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+) -> Vec<Vec<ratatui::text::Line<'static>>> {
+    drain_insert_history_with(rx, |cell| {
+        cell.display_lines(/*width*/ 80)
+            .into_iter()
+            .map(|mut line| {
+                if cell.as_any().is::<history_cell::FinalMessageSeparator>() {
+                    line.spans = vec![normalize_completion_timestamps(cell, &line).into()];
+                }
+                line
+            })
+            .collect()
+    })
+}
+
+pub(super) fn drain_insert_history_transcript(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+) -> Vec<Vec<ratatui::text::Line<'static>>> {
+    drain_insert_history_with(rx, |cell| cell.transcript_lines(/*width*/ 80))
+}
+
+pub(super) fn drain_insert_history_with(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+    render: impl Fn(&dyn HistoryCell) -> Vec<ratatui::text::Line<'static>>,
+) -> Vec<Vec<ratatui::text::Line<'static>>> {
     let mut out = Vec::new();
     while let Ok(ev) = rx.try_recv() {
         if let AppEvent::InsertHistoryCell(cell) = ev {
-            let mut lines = cell.display_lines(/*width*/ 80);
+            let mut lines = render(cell.as_ref());
             if !cell.is_stream_continuation() && !out.is_empty() && !lines.is_empty() {
                 lines.insert(0, "".into());
             }
@@ -512,7 +560,30 @@ pub(super) fn handle_agent_message_delta(chat: &mut ChatWidget, delta: impl Into
     );
 }
 
+pub(super) fn handle_agent_reasoning_started(chat: &mut ChatWidget, id: impl Into<String>) {
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: thread_id(chat),
+            turn_id: chat
+                .turn_lifecycle
+                .last_turn_id
+                .clone()
+                .unwrap_or_else(|| "turn-1".to_string()),
+            started_at_ms: 0,
+            item: AppServerThreadItem::Reasoning {
+                id: id.into(),
+                summary: Vec::new(),
+                content: Vec::new(),
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+}
+
 pub(super) fn handle_agent_reasoning_delta(chat: &mut ChatWidget, delta: impl Into<String>) {
+    if chat.status_state.reasoning_item_id.is_none() {
+        handle_agent_reasoning_started(chat, "reasoning-1");
+    }
     chat.handle_server_notification(
         ServerNotification::ReasoningSummaryTextDelta(ReasoningSummaryTextDeltaNotification {
             thread_id: thread_id(chat),
@@ -530,6 +601,9 @@ pub(super) fn handle_agent_reasoning_delta(chat: &mut ChatWidget, delta: impl In
 }
 
 pub(super) fn handle_agent_reasoning_final(chat: &mut ChatWidget) {
+    if chat.status_state.reasoning_item_id.is_none() {
+        handle_agent_reasoning_started(chat, "reasoning-1");
+    }
     chat.handle_server_notification(
         ServerNotification::ItemCompleted(ItemCompletedNotification {
             thread_id: thread_id(chat),
@@ -718,6 +792,7 @@ pub(super) fn handle_image_generation_end(
                 failure: None,
                 saved_path,
                 imagegen_request_id: None,
+                generation_id: None,
             }),
         }),
         /*replay_kind*/ None,
@@ -826,6 +901,7 @@ pub(super) fn begin_exec_with_source(
         .map(|parsed| AppServerCommandAction::from_core_with_cwd(parsed, &chat.config.cwd))
         .collect();
     let item = AppServerThreadItem::CommandExecution {
+        model_context: None,
         id: call_id.to_string(),
         command: codex_shell_command::parse_command::shlex_join(&command),
         cwd: chat.config.cwd.clone().into(),
@@ -851,6 +927,7 @@ pub(super) fn begin_unified_exec_startup(
 ) -> AppServerThreadItem {
     let command = vec!["bash".to_string(), "-lc".to_string(), raw_cmd.to_string()];
     let item = AppServerThreadItem::CommandExecution {
+        model_context: None,
         id: call_id.to_string(),
         command: codex_shell_command::parse_command::shlex_join(&command),
         cwd: chat.config.cwd.clone().into(),
@@ -934,8 +1011,10 @@ pub(super) fn complete_assistant_message(
 
 pub(super) fn pending_steer(text: &str) -> PendingSteer {
     PendingSteer {
+        client_id: "test-submission".to_string(),
         user_message: UserMessage::from(text),
         history_record: UserMessageHistoryRecord::UserMessageText,
+        source: UserMessageSource::Prompt,
         compare_key: PendingSteerCompareKey {
             message: text.to_string(),
             image_count: 0,
@@ -1083,6 +1162,7 @@ pub(super) fn end_exec(
     handle_exec_end(
         chat,
         AppServerThreadItem::CommandExecution {
+            model_context: None,
             id,
             command,
             cwd,
@@ -1702,4 +1782,32 @@ pub(super) async fn assert_hook_events_snapshot(
         .map(|lines| lines_to_single_string(lines))
         .collect::<String>();
     assert_chatwidget_snapshot!(snapshot_name, combined);
+}
+
+/// Normalize timestamps only in structurally identified completion footer cells.
+pub(crate) fn normalize_completion_timestamps(
+    cell: &dyn HistoryCell,
+    value: impl std::fmt::Display,
+) -> String {
+    if !cell.as_any().is::<history_cell::FinalMessageSeparator>() {
+        return value.to_string();
+    }
+    static COMPLETION_FOOTER: std::sync::LazyLock<regex_lite::Regex> = std::sync::LazyLock::new(
+        || {
+            regex_lite::Regex::new(r"(?m)^(?P<indent>[ \t]*)(?P<duration>Worked for (?:[0-9]+h )?(?:[0-9]+m )?[0-9]+s · )?(?:[A-Z][a-z]{2} [0-9]{1,2}(?:, [0-9]{4})? at )?[0-9]{1,2}:[0-9]{2} (?:AM|PM)(?P<padding>[ \t]*)$")
+                .expect("valid completion footer pattern")
+        },
+    );
+    COMPLETION_FOOTER
+        .replace_all(&value.to_string(), |captures: &regex_lite::Captures<'_>| {
+            let indent = &captures["indent"];
+            let padding = &captures["padding"];
+            let duration = if captures.name("duration").is_some() {
+                "Worked for [duration] · "
+            } else {
+                ""
+            };
+            format!("{indent}{duration}[completion time]{padding}")
+        })
+        .into_owned()
 }

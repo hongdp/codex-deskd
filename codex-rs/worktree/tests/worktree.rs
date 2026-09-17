@@ -4,9 +4,11 @@ use codex_worktree::CreateWorktree;
 use codex_worktree::ManagedWorktree;
 use codex_worktree::WorktreeManager;
 use codex_worktree::WorktreeSettings;
+use codex_worktree::default_worktree_base;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -79,6 +81,60 @@ fn create_worktree(
     })
 }
 
+#[test]
+fn removing_managed_worktree_refuses_dirty_or_unrelated_checkouts() {
+    let fixture = RepositoryFixture::new();
+    let manager = fixture.manager();
+    let checkout = create_worktree(&manager, &fixture.repository, /*base*/ None)
+        .expect("create managed checkout");
+    let other = RepositoryFixture::new();
+    assert!(manager.remove(&other.repository, &checkout.root).is_err());
+    assert!(
+        manager
+            .remove(&fixture.repository, &fixture.repository)
+            .is_err()
+    );
+    let aliased_current = checkout
+        .root
+        .join("..")
+        .join(checkout.root.file_name().expect("managed checkout name"));
+    assert!(
+        manager
+            .remove(&aliased_current, &checkout.root)
+            .expect_err("cannot remove current checkout via alias")
+            .to_string()
+            .contains("current worktree")
+    );
+    assert!(checkout.root.exists());
+    fs::write(checkout.root.join("unsaved.txt"), "local work\n").expect("write untracked file");
+    assert!(manager.remove(&fixture.repository, &checkout.root).is_err());
+    assert!(checkout.root.join("unsaved.txt").exists());
+
+    fs::remove_file(checkout.root.join("unsaved.txt")).expect("remove untracked file");
+    fs::write(fixture.repository.join(".git/info/exclude"), ".env\n")
+        .expect("ignore local settings file");
+    fs::write(checkout.root.join(".env"), "local settings\n").expect("write ignored file");
+    assert!(
+        manager
+            .remove(&fixture.repository, &checkout.root)
+            .expect_err("refuse ignored local files")
+            .to_string()
+            .contains("ignored local files")
+    );
+    assert!(checkout.root.join(".env").exists());
+    fs::remove_file(checkout.root.join(".env")).expect("remove ignored file");
+    manager
+        .remove(&fixture.repository, &checkout.root)
+        .expect("remove clean checkout");
+    assert!(!checkout.root.exists());
+    assert!(
+        manager
+            .list(&fixture.repository)
+            .expect("list remaining")
+            .is_empty()
+    );
+}
+
 fn git_output(repository: &Path, args: &[&str]) -> std::process::Output {
     Command::new("git")
         .current_dir(repository)
@@ -108,6 +164,41 @@ fn run_git(repository: &Path, args: &[&str]) -> String {
         .expect("git output is UTF-8")
         .trim()
         .to_owned()
+}
+
+#[test]
+fn cli_creation_shares_default_and_custom_desktop_pools_without_enabling_cleanup() {
+    let fixture = RepositoryFixture::new();
+    for root in [None, Some(fixture.codex_home.join("custom-desktop"))] {
+        let desktop =
+            root.map(|root| HashMap::from([("git-worktree-root".to_owned(), json!(root))]));
+        let desktop_settings =
+            WorktreeSettings::from_desktop_config(&fixture.codex_home, desktop.as_ref())
+                .expect("resolve desktop settings");
+        let mut cli_desktop = desktop.unwrap_or_default();
+        cli_desktop.insert("worktree-auto-cleanup-enabled".to_owned(), json!("unused"));
+        cli_desktop.insert("worktree-keep-count".to_owned(), json!(0));
+        let manager = WorktreeManager::new(
+            WorktreeSettings::for_cli(&fixture.codex_home, Some(&cli_desktop))
+                .expect("resolve CLI settings"),
+        );
+        let worktree = create_worktree(&manager, &fixture.repository, /*base*/ None)
+            .expect("create CLI worktree");
+        assert!(worktree.root.starts_with(&desktop_settings.root));
+        assert_eq!(
+            manager.settings(),
+            &WorktreeSettings {
+                auto_cleanup_enabled: false,
+                ..desktop_settings.clone()
+            }
+        );
+        assert_eq!(
+            WorktreeManager::new(desktop_settings)
+                .list(&fixture.repository)
+                .expect("list desktop worktrees"),
+            vec![worktree],
+        );
+    }
 }
 
 #[test]
@@ -344,12 +435,10 @@ fn creation_ignores_inherited_git_environment() {
         let settings =
             WorktreeSettings::from_desktop_config(&root.join("codex-home"), /*desktop*/ None)
                 .expect("fixture operation succeeds");
-        let worktree = create_worktree(
-            &WorktreeManager::new(settings),
-            &source_cwd,
-            /*base*/ None,
-        )
-        .expect("fixture operation succeeds");
+        let base = default_worktree_base(&source_cwd).expect("resolve source default");
+        assert_eq!(base, "refs/remotes/origin/source-default");
+        let worktree = create_worktree(&WorktreeManager::new(settings), &source_cwd, Some(&base))
+            .expect("fixture operation succeeds");
         assert_eq!(worktree.source_root, source);
         assert_eq!(worktree.source_cwd, source_cwd);
         assert_eq!(
@@ -372,6 +461,17 @@ fn creation_ignores_inherited_git_environment() {
     .expect("fixture operation succeeds");
     run_git(&fixture.repository, &["add", "."]);
     commit(&fixture.repository, "checkout filter attributes");
+    for (repository, branch) in [
+        (&fixture.repository, "source-default"),
+        (&other, "other-default"),
+    ] {
+        let target = format!("refs/remotes/origin/{branch}");
+        run_git(repository, &["update-ref", &target, "HEAD"]);
+        run_git(
+            repository,
+            &["symbolic-ref", "refs/remotes/origin/HEAD", &target],
+        );
+    }
     let mut child = Command::new(std::env::current_exe().expect("current test executable"));
     child
         .args(["--exact", "creation_ignores_inherited_git_environment", "--nocapture"])
@@ -545,4 +645,336 @@ fn creation_fails_for_a_directory_outside_a_git_repository() {
         create_worktree(&manager, &non_repository, /*base*/ None).is_err(),
         "managed worktree creation requires a Git repository",
     );
+}
+
+#[test]
+fn listing_rejects_a_primary_checkout_even_when_its_path_matches_the_layout() {
+    let fixture = RepositoryFixture::new();
+    let manager = fixture.manager();
+    let primary = manager.settings().root.join("a1b2").join("ordinary");
+    initialize_repository(&primary);
+
+    assert!(
+        manager
+            .list(&primary)
+            .expect("list managed worktrees for primary checkout")
+            .is_empty(),
+        "a primary checkout under a matching path is not a managed linked worktree",
+    );
+
+    let git_dir = fixture.codex_home.join("separate-git-dir");
+    run_git(
+        &primary,
+        &[
+            "init",
+            "--separate-git-dir",
+            git_dir.to_str().expect("UTF-8 fixture path"),
+        ],
+    );
+    assert!(primary.join(".git").is_file());
+    assert!(
+        manager
+            .list(&primary)
+            .expect("fixture operation succeeds")
+            .is_empty()
+    );
+}
+
+#[test]
+fn listing_skips_worktrees_without_a_safe_source_working_directory() {
+    let fixture = RepositoryFixture::new();
+    let manager = fixture.manager();
+    let source_cwd = fixture.repository.join("nested/component");
+    let valid =
+        create_worktree(&manager, &source_cwd, /*base*/ None).expect("fixture operation succeeds");
+    let missing =
+        create_worktree(&manager, &source_cwd, /*base*/ None).expect("fixture operation succeeds");
+    let file =
+        create_worktree(&manager, &source_cwd, /*base*/ None).expect("fixture operation succeeds");
+    fs::remove_dir_all(&missing.cwd).expect("fixture operation succeeds");
+    fs::remove_dir_all(&file.cwd).expect("fixture operation succeeds");
+    fs::write(&file.cwd, "not a directory").expect("fixture operation succeeds");
+    #[cfg(unix)]
+    {
+        let escaping = create_worktree(&manager, &source_cwd, /*base*/ None)
+            .expect("fixture operation succeeds");
+        fs::remove_dir_all(&escaping.cwd).expect("fixture operation succeeds");
+        std::os::unix::fs::symlink(&source_cwd, &escaping.cwd).expect("fixture operation succeeds");
+    }
+
+    assert_eq!(
+        manager
+            .list(&source_cwd)
+            .expect("fixture operation succeeds"),
+        vec![valid]
+    );
+}
+
+#[test]
+fn listing_rejects_a_stale_registration_reused_by_another_repository() {
+    let fixture = RepositoryFixture::new();
+    let manager = fixture.manager();
+    let stale = create_worktree(&manager, &fixture.repository, /*base*/ None)
+        .expect("fixture operation succeeds");
+    fs::remove_dir_all(&stale.root).expect("fixture operation succeeds");
+    let other = fixture.codex_home.join("other-repository");
+    initialize_repository(&other);
+    run_git(
+        &other,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            stale.root.to_str().expect("UTF-8 fixture path"),
+            "HEAD",
+        ],
+    );
+
+    assert!(
+        manager
+            .list(&fixture.repository)
+            .expect("fixture operation succeeds")
+            .is_empty()
+    );
+    assert_eq!(
+        manager
+            .list(&other)
+            .expect("fixture operation succeeds")
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn listing_rejects_a_stale_registration_reused_by_the_same_repository() {
+    let fixture = RepositoryFixture::new();
+    let manager = fixture.manager();
+    let original = run_git(&fixture.repository, &["rev-parse", "HEAD"]);
+    fs::write(fixture.repository.join("second.txt"), "second commit\n")
+        .expect("write second revision");
+    run_git(&fixture.repository, &["add", "second.txt"]);
+    commit(&fixture.repository, "second commit");
+    let current = run_git(&fixture.repository, &["rev-parse", "HEAD"]);
+    let stale = manager.settings().root.join("a1b2/project");
+    let moved = manager.settings().root.join("c3d4/project");
+    // Use ordinary Git checkouts: manager.create pins core.worktree to its path.
+    for (path, revision) in [(&stale, &original), (&moved, &current)] {
+        fs::create_dir_all(path.parent().expect("worktree bucket"))
+            .expect("create worktree bucket");
+        run_git(
+            &fixture.repository,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                path.to_str().expect("UTF-8 fixture path"),
+                revision,
+            ],
+        );
+    }
+    let valid = create_worktree(&manager, &fixture.repository, /*base*/ None)
+        .expect("create unaffected worktree");
+    fs::remove_dir_all(&stale).expect("remove stale checkout");
+    fs::rename(&moved, &stale).expect("reuse stale path without repairing registration");
+
+    assert_eq!(
+        manager.list(&fixture.repository).expect("list worktrees"),
+        vec![valid],
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn listing_rejects_checkout_and_bucket_aliases_but_allows_a_root_alias() {
+    let fixture = RepositoryFixture::new();
+    let manager = fixture.manager();
+    let stale = create_worktree(&manager, &fixture.repository, /*base*/ None)
+        .expect("create stale checkout");
+    fs::write(fixture.repository.join("second.txt"), "second commit\n")
+        .expect("write second revision");
+    run_git(&fixture.repository, &["add", "second.txt"]);
+    commit(&fixture.repository, "second commit");
+    let valid = create_worktree(&manager, &fixture.repository, /*base*/ None)
+        .expect("create valid checkout");
+    let expected = vec![valid.clone()];
+
+    fs::remove_dir_all(&stale.root).expect("remove stale checkout");
+    std::os::unix::fs::symlink(&valid.root, &stale.root).expect("alias stale checkout");
+    assert_eq!(
+        manager.list(&fixture.repository).expect("list worktrees"),
+        expected,
+    );
+
+    fs::remove_file(&stale.root).expect("remove checkout alias");
+    let stale_bucket = stale.root.parent().expect("stale worktree bucket");
+    fs::remove_dir(stale_bucket).expect("remove stale bucket");
+    std::os::unix::fs::symlink(
+        valid.root.parent().expect("valid worktree bucket"),
+        stale_bucket,
+    )
+    .expect("alias stale bucket");
+    assert_eq!(
+        manager.list(&fixture.repository).expect("list worktrees"),
+        expected,
+    );
+
+    let aliased_root = fixture.codex_home.join("aliased-worktrees");
+    std::os::unix::fs::symlink(&manager.settings().root, &aliased_root)
+        .expect("alias managed root");
+    let aliased_manager = WorktreeManager::new(WorktreeSettings {
+        root: aliased_root,
+        ..manager.settings().clone()
+    });
+    assert_eq!(
+        aliased_manager
+            .list(&fixture.repository)
+            .expect("list worktrees through managed-root alias"),
+        expected,
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn listing_preserves_inventory_when_a_branch_name_is_not_utf8() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let fixture = RepositoryFixture::new();
+    let manager = fixture.manager();
+    let worktree = create_worktree(&manager, &fixture.repository, /*base*/ None)
+        .expect("fixture operation succeeds");
+    let branch = b"refs/heads/non-utf8-\xff";
+    // Packed refs can represent these names even on filesystems that reject
+    // non-UTF-8 filenames, including APFS.
+    let mut packed_ref = format!("{} ", worktree.head_sha).into_bytes();
+    packed_ref.extend_from_slice(branch);
+    packed_ref.push(b'\n');
+    fs::write(fixture.repository.join(".git/packed-refs"), packed_ref)
+        .expect("fixture operation succeeds");
+    let output = Command::new("git")
+        .current_dir(&worktree.root)
+        .args(["symbolic-ref", "HEAD"])
+        .arg(std::ffi::OsStr::from_bytes(branch))
+        .output()
+        .expect("fixture operation succeeds");
+    assert!(output.status.success());
+
+    assert_eq!(
+        manager
+            .list(&fixture.repository)
+            .expect("fixture operation succeeds"),
+        vec![worktree]
+    );
+    // The primary checkout is not managed, but its metadata is parsed too.
+    fs::write(
+        fixture.repository.join(".git/HEAD"),
+        [b"ref: ".as_slice(), branch, b"\n"].concat(),
+    )
+    .expect("fixture operation succeeds");
+    assert_eq!(
+        manager
+            .list(&fixture.repository)
+            .expect("fixture operation succeeds")
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn listing_only_includes_managed_worktrees_for_the_requested_repository() {
+    let fixture = RepositoryFixture::new();
+    let manager = fixture.manager();
+    let first = create_worktree(&manager, &fixture.repository, /*base*/ None)
+        .expect("create first worktree");
+    let second = create_worktree(&manager, &fixture.repository, /*base*/ None)
+        .expect("create second worktree");
+
+    let other_repository = fixture.codex_home.join("other-project");
+    initialize_repository(&other_repository);
+    let unrelated = create_worktree(&manager, &other_repository, /*base*/ None)
+        .expect("create unrelated repository worktree");
+
+    let listed = manager
+        .list(&fixture.repository)
+        .expect("list managed worktrees for source repository");
+    let listed_roots: Vec<&Path> = listed.iter().map(|entry| entry.root.as_path()).collect();
+
+    assert_eq!(listed_roots.len(), 2);
+    assert!(listed_roots.contains(&first.root.as_path()));
+    assert!(listed_roots.contains(&second.root.as_path()));
+    assert!(!listed_roots.contains(&unrelated.root.as_path()));
+
+    let unrelated_list = manager
+        .list(&other_repository)
+        .expect("list managed worktrees for the other repository");
+    assert_eq!(unrelated_list.len(), 1);
+    assert_eq!(unrelated_list[0].root, unrelated.root);
+}
+
+#[test]
+fn listing_ignores_worktrees_outside_the_desktop_bucket_layout() {
+    let fixture = RepositoryFixture::new();
+    let manager = fixture.manager();
+    let root = manager.settings().root.join("scratch").join("project");
+    fs::create_dir_all(root.parent().expect("scratch worktree parent"))
+        .expect("create scratch worktree parent");
+    run_git(
+        &fixture.repository,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            root.to_str().expect("UTF-8 scratch worktree"),
+            "HEAD",
+        ],
+    );
+
+    assert!(
+        manager
+            .list(&fixture.repository)
+            .expect("list managed worktrees")
+            .is_empty(),
+        "non-Desktop worktrees must never enter the managed inventory",
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn creation_listing_and_thread_binding_preserve_native_repository_paths() {
+    use std::ffi::OsString;
+    #[cfg(not(target_os = "macos"))]
+    use std::os::unix::ffi::OsStringExt;
+
+    let fixture = RepositoryFixture::new();
+    let manager = fixture.manager();
+
+    for name in [
+        OsString::from("project with trailing space "),
+        OsString::from("project-東京"),
+        // APFS only supports creating filenames with valid UTF-8.
+        #[cfg(not(target_os = "macos"))]
+        OsString::from_vec(b"project-\xff".to_vec()),
+    ] {
+        let repository = fixture.codex_home.join(&name);
+        initialize_repository(&repository);
+        let worktree = create_worktree(&manager, &repository, /*base*/ None)
+            .expect("create managed worktree with a native repository path");
+
+        assert_eq!(worktree.source_root, repository);
+        assert_eq!(worktree.root.file_name(), Some(name.as_os_str()));
+        let listed = manager
+            .list(&repository)
+            .expect("list managed worktrees with a native repository path");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].root, worktree.root);
+
+        manager
+            .bind_thread(&worktree.root, "native-path-thread")
+            .expect("bind managed worktree with a native repository path");
+        assert_eq!(
+            manager
+                .owner(&worktree.root)
+                .expect("read owner with a native repository path"),
+            Some("native-path-thread".to_owned()),
+        );
+    }
 }

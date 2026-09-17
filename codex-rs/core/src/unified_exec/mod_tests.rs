@@ -81,7 +81,12 @@ fn test_exec_request(
         ExecExpiration::DefaultTimeout,
         ExecCapturePolicy::ShellTool,
         SandboxType::None,
-        turn.config.effective_workspace_roots(),
+        turn.config
+            .effective_workspace_roots()
+            .iter()
+            .map(PathUri::to_abs_path)
+            .collect::<std::io::Result<Vec<_>>>()
+            .expect("test workspace roots are host-native"),
         turn.windows_sandbox_level,
         windows_sandbox_private_desktop,
         permission_profile,
@@ -111,6 +116,7 @@ async fn exec_command_with_tty(
             .open_session_with_prepared_exec_env(
                 process_id,
                 &request,
+                /*tool_ctx*/ None,
                 codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
                 /*network_policy_decider*/ None,
                 tty,
@@ -772,6 +778,7 @@ async fn completed_pipe_commands_preserve_exit_code() -> anyhow::Result<()> {
         .open_session_with_prepared_exec_env(
             /*process_id*/ 1234,
             &request,
+            /*tool_ctx*/ None,
             codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
             /*network_policy_decider*/ None,
             /*tty*/ false,
@@ -814,6 +821,7 @@ async fn unified_exec_uses_remote_exec_server_when_configured() -> anyhow::Resul
         .open_session_with_prepared_exec_env(
             /*process_id*/ 1234,
             &request,
+            /*tool_ctx*/ None,
             codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
             /*network_policy_decider*/ None,
             /*tty*/ true,
@@ -863,6 +871,7 @@ async fn remote_exec_server_rejects_inherited_fd_launches() -> anyhow::Result<()
         .open_session_with_prepared_exec_env(
             /*process_id*/ 1234,
             &request,
+            /*tool_ctx*/ None,
             codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
             /*network_policy_decider*/ None,
             /*tty*/ true,
@@ -947,8 +956,9 @@ async fn stdin_approval_preserves_the_reviewed_terminal() -> anyhow::Result<()> 
         assert!(original.interaction_lock().try_lock_owned().is_err());
     }
     // Empty polling must complete without an approval response.
+    // The test deadline must allow the minimum empty-poll wait.
     tokio::time::timeout(
-        Duration::from_secs(/*secs*/ 5),
+        Duration::from_millis(MIN_EMPTY_YIELD_TIME_MS) + Duration::from_secs(/*secs*/ 5),
         write_stdin(&session, &turn, process_id, "", /*yield_time_ms*/ 250),
     )
     .await??;

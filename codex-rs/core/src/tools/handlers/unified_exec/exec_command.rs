@@ -59,6 +59,7 @@ const EXEC_COMMAND_REJECTION_MAX_BYTES: usize = 900;
 #[derive(Clone, Copy)]
 pub(crate) struct ExecCommandHandlerOptions {
     pub(crate) allow_login_shell: bool,
+    pub(crate) allow_tty: bool,
     pub(crate) exec_permission_approvals_enabled: bool,
     pub(crate) include_environment_id: bool,
     pub(crate) include_shell_parameter: bool,
@@ -82,6 +83,7 @@ impl Default for ExecCommandHandler {
             lifetime: ExecCommandLifetime::Interactive,
             options: ExecCommandHandlerOptions {
                 allow_login_shell: false,
+                allow_tty: true,
                 exec_permission_approvals_enabled: false,
                 include_environment_id: false,
                 include_shell_parameter: true,
@@ -122,10 +124,19 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
             self.options.include_shell_parameter,
             self.options.include_windows_shell_guidance,
         );
-        match self.lifetime {
+        let mut spec = match self.lifetime {
             ExecCommandLifetime::Interactive => spec,
             ExecCommandLifetime::OneShot => one_shot_exec_command_spec(spec),
+        };
+        if !self.options.allow_tty
+            && let ToolSpec::Function(spec) = &mut spec
+        {
+            spec.parameters
+                .properties
+                .get_or_insert_default()
+                .remove("tty");
         }
+        spec
     }
 
     fn supports_parallel_tool_calls(&self) -> bool {
@@ -230,6 +241,11 @@ impl ExecCommandHandler {
                 parse_arguments(&arguments)?
             }
         };
+        if args.tty && !session.features().enabled(Feature::UnifiedExecTty) {
+            return Err(FunctionCallError::RespondToModel(
+                "TTY execution is disabled by config; omit `tty` or set it to false.".to_string(),
+            ));
+        }
         let sandbox_permissions =
             resolve_sandbox_permissions(args.sandbox_permissions, args.justification.as_deref())?;
         let hook_command = args.cmd.clone();
@@ -306,14 +322,7 @@ impl ExecCommandHandler {
         let requested_additional_permissions = additional_permissions.clone();
         let sandbox_context =
             turn_environment.sandbox_context(/*additional_permissions*/ None);
-        let Some(permission_context) =
-            file_system_sandbox_policy_context_for_cwd(&sandbox_context, &cwd)
-        else {
-            manager.release_process_id(process_id).await;
-            return Err(FunctionCallError::RespondToModel(
-                "selected environment sandbox context is missing cwd".to_string(),
-            ));
-        };
+        let permission_context = file_system_sandbox_policy_context_for_cwd(&sandbox_context, &cwd);
         let effective_additional_permissions = apply_granted_turn_permissions(
             context.session.as_ref(),
             turn_environment,
@@ -391,7 +400,7 @@ impl ExecCommandHandler {
                 chunk_id: String::new(),
                 wall_time: std::time::Duration::ZERO,
                 raw_output: output.into_text().into_bytes(),
-                truncation_policy: turn.model_info().truncation_policy.into(),
+                truncation_policy: step_context.settings.model_info.truncation_policy.into(),
                 max_output_tokens,
                 process_id: None,
                 exit_code: None,
@@ -401,7 +410,7 @@ impl ExecCommandHandler {
             }));
         }
 
-        emit_unified_exec_tty_metric(&turn.session_telemetry, tty);
+        emit_unified_exec_tty_metric(&step_context.session_telemetry, tty);
         let request = ExecCommandRequest {
             command,
             shell_type,
@@ -445,7 +454,7 @@ impl ExecCommandHandler {
                     chunk_id: generate_chunk_id(),
                     wall_time: output.duration,
                     raw_output: output_text.into_bytes(),
-                    truncation_policy: turn.model_info().truncation_policy.into(),
+                    truncation_policy: step_context.settings.model_info.truncation_policy.into(),
                     max_output_tokens,
                     // Sandbox denial is terminal, so there is no live
                     // process for write_stdin to resume.
@@ -485,14 +494,16 @@ fn one_shot_exec_command_spec(spec: ToolSpec) -> ToolSpec {
             "Maximum command runtime. Defaults to 10000 ms.".to_string(),
         )),
     );
-    if let Some(output_properties) = spec
-        .output_schema
-        .as_mut()
-        .and_then(|schema| schema.get_mut("properties"))
-        .and_then(serde_json::Value::as_object_mut)
-    {
-        output_properties.remove("session_id");
-    }
+    spec.output_schema = spec.output_schema.map(|schema| {
+        let mut schema = schema.into_value();
+        if let Some(output_properties) = schema
+            .get_mut("properties")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            output_properties.remove("session_id");
+        }
+        schema.into()
+    });
     ToolSpec::Function(spec)
 }
 

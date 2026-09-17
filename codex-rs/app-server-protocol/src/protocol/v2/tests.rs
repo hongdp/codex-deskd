@@ -29,6 +29,7 @@ use codex_protocol::models::AdditionalPermissionProfile as CoreAdditionalPermiss
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 use codex_protocol::models::FileSystemPermissions as CoreFileSystemPermissions;
 use codex_protocol::models::ImageDetail;
+use codex_protocol::models::ImageReference as CoreImageReference;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::NetworkPermissions as CoreNetworkPermissions;
 use codex_protocol::models::WebSearchAction as CoreWebSearchAction;
@@ -271,7 +272,16 @@ fn thread_resume_params_accept_turns_page_bootstrap() {
 #[test]
 fn thread_resume_response_round_trips_initial_turns_page() {
     let response = ThreadResumeResponse {
+        disabled_plugin_ids: Vec::new(),
         thread: Thread {
+            originator: Some("future_client".to_string()),
+            environments: Some(vec![ThreadEnvironment {
+                environment_id: "remote".to_string(),
+                cwd: LegacyAppPathString::from_string(r"C:\workspace"),
+                runtime_workspace_roots: vec![LegacyAppPathString::from_string(
+                    r"C:\workspace\src",
+                )],
+            }]),
             id: "thr_123".to_string(),
             extra: None,
             session_id: "thr_123".to_string(),
@@ -304,6 +314,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
             agent_role: None,
             git_info: None,
             name: None,
+            daybreak_enabled: None,
             turns: Vec::new(),
         },
         model: "gpt-5".to_string(),
@@ -317,6 +328,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
         sandbox: SandboxPolicy::DangerFullAccess,
         active_permission_profile: None,
         reasoning_effort: None,
+        collaboration_mode: None,
         multi_agent_mode: Default::default(),
         initial_turns_page: Some(TurnsPage {
             data: Vec::new(),
@@ -328,6 +340,13 @@ fn thread_resume_response_round_trips_initial_turns_page() {
     };
 
     let value = serde_json::to_value(&response).expect("serialize thread resume response");
+    assert_eq!(value["thread"]["originator"], json!("future_client"));
+    assert_eq!(
+        value["thread"]["environments"],
+        json!([{
+            "environmentId": "remote", "cwd": r"C:\workspace", "runtimeWorkspaceRoots": [r"C:\workspace\src"]
+        }])
+    );
     assert_eq!(
         value["thread"]["section"],
         json!({
@@ -345,11 +364,15 @@ fn thread_resume_response_round_trips_initial_turns_page() {
     legacy_thread_fields.remove("section");
     legacy_thread_fields.remove("sectionEnteredAt");
     legacy_thread_fields.remove("projectId");
+    legacy_thread_fields.remove("environments");
+    legacy_thread_fields.remove("originator");
     let legacy_thread =
         serde_json::from_value::<Thread>(legacy_thread).expect("deserialize legacy thread");
     assert_eq!(legacy_thread.section, None);
     assert_eq!(legacy_thread.section_entered_at, None);
     assert_eq!(legacy_thread.project_id, None);
+    assert_eq!(legacy_thread.environments, None);
+    assert_eq!(legacy_thread.originator, None);
 
     assert_eq!(
         value.get("initialTurnsPage"),
@@ -743,7 +766,10 @@ fn permissions_request_approval_uses_request_permission_profile() {
     }))
     .expect("permissions request should deserialize");
 
-    assert_eq!(params.cwd, absolute_path("repo"));
+    assert_eq!(
+        params.cwd,
+        LegacyAppPathString::from_abs_path(&absolute_path("repo"))
+    );
     assert_eq!(params.environment_id.as_deref(), Some("remote"));
     assert_eq!(
         params.permissions,
@@ -2094,6 +2120,10 @@ fn config_approvals_reviewer_is_marked_experimental() {
 fn config_requirements_granular_allowed_approval_policy_is_marked_experimental() {
     let reason =
         crate::experimental_api::ExperimentalApi::experimental_reason(&ConfigRequirements {
+            model_provider: None,
+            model_providers: None,
+            allowed_login_methods: None,
+            application: None,
             cli_auth_credentials_store: None,
             chatgpt_base_url: None,
             additional_developer_instructions: None,
@@ -2555,6 +2585,8 @@ fn mcp_server_elicitation_response_serializes_nullable_content() {
 fn mcp_server_status_serializes_absent_server_info_as_null() {
     let response = ListMcpServerStatusResponse {
         data: vec![McpServerStatus {
+            server_capabilities: None,
+            tools_error: None,
             name: "not-ready".to_string(),
             runtime_status: None,
             plugin_id: None,
@@ -2575,7 +2607,9 @@ fn mcp_server_status_serializes_absent_server_info_as_null() {
                 "runtimeStatus": null,
                 "pluginId": null,
                 "serverInfo": null,
+                "serverCapabilities": null,
                 "tools": {},
+                "toolsError": null,
                 "resources": [],
                 "resourceTemplates": [],
                 "authStatus": "unknown",
@@ -2600,6 +2634,8 @@ fn mcp_server_status_accepts_older_inventory_without_runtime_status() {
     assert_eq!(
         status,
         McpServerStatus {
+            server_capabilities: None,
+            tools_error: None,
             name: "older-server".to_string(),
             runtime_status: None,
             plugin_id: None,
@@ -2671,6 +2707,8 @@ fn mcp_server_status_updated_serializes_failure_reason() {
 fn mcp_server_status_serializes_absent_server_info_metadata_as_null() {
     let response = ListMcpServerStatusResponse {
         data: vec![McpServerStatus {
+            server_capabilities: None,
+            tools_error: None,
             name: "initialized".to_string(),
             runtime_status: None,
             plugin_id: Some("lookup@test".to_string()),
@@ -2697,6 +2735,7 @@ fn mcp_server_status_serializes_absent_server_info_metadata_as_null() {
                 "name": "initialized",
                 "runtimeStatus": null,
                 "pluginId": "lookup@test",
+                "serverCapabilities": null,
                 "serverInfo": {
                     "name": "lookup-server",
                     "title": null,
@@ -2706,6 +2745,7 @@ fn mcp_server_status_serializes_absent_server_info_metadata_as_null() {
                     "websiteUrl": null,
                 },
                 "tools": {},
+                "toolsError": null,
                 "resources": [],
                 "resourceTemplates": [],
                 "authStatus": "unsupported",
@@ -2835,12 +2875,12 @@ fn automatic_approval_review_deserializes_aborted_status() {
 }
 
 #[test]
-fn guardian_approval_review_action_round_trips_command_shape() {
+fn guardian_approval_review_action_round_trips_foreign_command_path() {
     let value = json!({
         "type": "command",
         "source": "shell",
-        "command": "rm -rf /tmp/example.sqlite",
-        "cwd": absolute_path_string("tmp"),
+        "command": r"Remove-Item C:\workspace\example.sqlite",
+        "cwd": r"C:\workspace",
     });
     let action: GuardianApprovalReviewAction =
         serde_json::from_value(value.clone()).expect("guardian review action");
@@ -2849,8 +2889,8 @@ fn guardian_approval_review_action_round_trips_command_shape() {
         action,
         GuardianApprovalReviewAction::Command {
             source: GuardianCommandSource::Shell,
-            command: "rm -rf /tmp/example.sqlite".to_string(),
-            cwd: absolute_path("tmp"),
+            command: r"Remove-Item C:\workspace\example.sqlite".to_string(),
+            cwd: LegacyAppPathString::from_string(r"C:\workspace"),
         }
     );
     assert_eq!(
@@ -2998,7 +3038,9 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
                 text_elements: Vec::new(),
             },
             CoreUserInput::Image {
-                image_url: "https://example.com/image.png".to_string(),
+                image: CoreImageReference::Inline {
+                    image_url: "https://example.com/image.png".to_string(),
+                },
                 detail: Some(ImageDetail::Original),
             },
             CoreUserInput::LocalImage {
@@ -3033,7 +3075,9 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
                     text_elements: Vec::new(),
                 },
                 UserInput::Image {
-                    url: "https://example.com/image.png".to_string(),
+                    image: ImageReference::Inline {
+                        url: "https://example.com/image.png".to_string(),
+                    },
                     detail: Some(ImageDetail::Original),
                 },
                 UserInput::LocalImage {
@@ -3173,6 +3217,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
     );
 
     let command_item = TurnItem::CommandExecution(CommandExecutionItem {
+        model_context: None,
         id: "exec-1".to_string(),
         plugin_id: Some("sample@openai-curated".to_string()),
         script_path: Some("scripts/run.py".to_string()),
@@ -3205,6 +3250,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
     assert_eq!(
         ThreadItem::from(command_item),
         ThreadItem::CommandExecution {
+            model_context: None,
             id: "exec-1".to_string(),
             plugin_id: Some("sample@openai-curated".to_string()),
             script_path: Some("scripts/run.py".to_string()),
@@ -3417,6 +3463,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         arguments: json!({"arg": "value"}),
         connector_id: Some("calendar".to_string()),
         mcp_app_resource_uri: Some("app://connector".to_string()),
+        mcp_app_ui: None,
         link_id: Some("link_calendar".to_string()),
         app_name: Some("Calendar".to_string()),
         action_name: Some("create_event".to_string()),
@@ -3444,6 +3491,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
                 action_name: Some("create_event".to_string()),
             }),
             mcp_app_resource_uri: Some("app://connector".to_string()),
+            mcp_app_ui: None,
             plugin_id: Some("sample@test".to_string()),
             read_only_hint: Some(true),
             result: None,
@@ -3459,6 +3507,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         arguments: JsonValue::Null,
         connector_id: None,
         mcp_app_resource_uri: None,
+        mcp_app_ui: None,
         link_id: None,
         app_name: None,
         action_name: None,
@@ -3485,6 +3534,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             arguments: JsonValue::Null,
             app_context: None,
             mcp_app_resource_uri: None,
+            mcp_app_ui: None,
             plugin_id: None,
             read_only_hint: Some(false),
             result: Some(Box::new(McpToolCallResult {
@@ -3514,6 +3564,7 @@ fn mcp_tool_call_app_context_serializes_connector_id() {
             action_name: Some("create_event".to_string()),
         }),
         mcp_app_resource_uri: Some("app://connector".to_string()),
+        mcp_app_ui: None,
         plugin_id: None,
         read_only_hint: Some(false),
         result: None,
@@ -3538,6 +3589,7 @@ fn mcp_tool_call_app_context_serializes_connector_id() {
                 "actionName": "create_event",
             },
             "mcpAppResourceUri": "app://connector",
+            "mcpAppUi": null,
             "pluginId": null,
             "readOnlyHint": false,
             "result": null,
@@ -3568,16 +3620,84 @@ fn mcp_tool_call_app_context_serializes_missing_mixed_version_fields_as_null() {
     );
 }
 
+/// Keeps the existing URL form stable while exposing file-backed images as `fileId`.
+#[test]
+fn user_input_image_references_round_trip_with_stable_wire_shapes() {
+    let cases = [
+        (
+            UserInput::Image {
+                image: ImageReference::Inline {
+                    url: "data:image/png;base64,AAA".to_string(),
+                },
+                detail: Some(ImageDetail::High),
+            },
+            json!({
+                "type": "image",
+                "url": "data:image/png;base64,AAA",
+                "detail": "high",
+            }),
+        ),
+        (
+            UserInput::Image {
+                image: ImageReference::File {
+                    file_id: "file_123".to_string(),
+                },
+                detail: Some(ImageDetail::Original),
+            },
+            json!({
+                "type": "image",
+                "fileId": "file_123",
+                "detail": "original",
+            }),
+        ),
+    ];
+
+    for (input, wire_value) in cases {
+        assert_eq!(
+            serde_json::to_value(&input).expect("user input should serialize"),
+            wire_value,
+        );
+        assert_eq!(
+            serde_json::from_value::<UserInput>(wire_value).expect("user input should deserialize"),
+            input,
+        );
+    }
+}
+
+/// Preserves durable file identity in both directions at the Core boundary.
+#[test]
+fn file_image_user_input_converts_both_directions() {
+    let app_server_input = UserInput::Image {
+        image: ImageReference::File {
+            file_id: "file_123".to_string(),
+        },
+        detail: Some(ImageDetail::High),
+    };
+    let core_input = CoreUserInput::Image {
+        image: CoreImageReference::File {
+            file_id: "file_123".to_string(),
+        },
+        detail: Some(ImageDetail::High),
+    };
+
+    assert_eq!(app_server_input.clone().into_core(), core_input);
+    assert_eq!(UserInput::from(core_input), app_server_input);
+}
+
 #[test]
 fn user_input_into_core_preserves_media_fields() {
     assert_eq!(
         UserInput::Image {
-            url: "https://example.com/image.png".to_string(),
+            image: ImageReference::Inline {
+                url: "https://example.com/image.png".to_string(),
+            },
             detail: Some(ImageDetail::Original),
         }
         .into_core(),
         CoreUserInput::Image {
-            image_url: "https://example.com/image.png".to_string(),
+            image: CoreImageReference::Inline {
+                image_url: "https://example.com/image.png".to_string(),
+            },
             detail: Some(ImageDetail::Original),
         }
     );
@@ -4779,6 +4899,7 @@ fn turn_start_params_preserve_explicit_null_service_tier() {
     );
 
     let without_override = TurnStartParams {
+        disabled_plugin_ids: None,
         thread_id: "thread_123".to_string(),
         client_user_message_id: None,
         input: vec![],

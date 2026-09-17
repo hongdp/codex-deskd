@@ -1,8 +1,48 @@
-//! Offline editing bypasses command dispatch and popup actions, retaining the draft in place.
+//! Offline editing retains the draft in place.
+//! Paste Enter handling is shared with normal submission so buffered newlines survive both paths.
+//! Offline draft edits also consume the Astra sparkle opportunity before rendering.
 
 use super::*;
 
 impl ChatComposer {
+    /// Preserve Enter inside a paste burst without attempting submission.
+    pub(crate) fn handle_paste_enter(&mut self, now: Instant) -> bool {
+        let in_slash_context = self.slash_commands_enabled()
+            && !self.draft.is_bash_mode
+            && (matches!(self.popups.active, ActivePopup::Command(_))
+                || self
+                    .draft
+                    .textarea
+                    .text()
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .starts_with('/'));
+        if !self.draft.disable_paste_burst
+            && self.draft.paste_burst.is_active()
+            && !in_slash_context
+            && self
+                .draft
+                .paste_burst
+                .append_control_char_if_active('\n', now)
+        {
+            return true;
+        }
+        if !in_slash_context
+            && !self.draft.disable_paste_burst
+            && self
+                .draft
+                .paste_burst
+                .newline_should_insert_instead_of_submit(now)
+        {
+            self.draft.textarea.insert_str("\n");
+            self.draft.paste_burst.extend_window(now);
+            return true;
+        }
+
+        false
+    }
+
     pub(crate) fn handle_disconnected_key(&mut self, key: KeyEvent) {
         self.cancel_history_search();
         self.attachments.clear_remote_image_selection();
@@ -27,7 +67,14 @@ impl ChatComposer {
         if !matches!(key.code, KeyCode::Enter | KeyCode::Tab)
             && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
         {
-            self.handle_input_basic(key);
+            // Null is sent internally to clean up on disconnect or expand a paste; it isn't an edit.
+            let before = if key.code == KeyCode::Null {
+                None
+            } else {
+                self.before_sparkle_editor_key(key)
+            };
+            let (result, _) = self.handle_input_basic(key);
+            self.after_sparkle_key(before, &result);
         }
     }
 }

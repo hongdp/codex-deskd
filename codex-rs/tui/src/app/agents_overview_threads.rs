@@ -4,6 +4,7 @@
 
 use super::App;
 use super::agents_overview::AGENTS_OVERVIEW_VIEW_ID;
+use super::agents_overview_details::preview_agent_message;
 use super::app_server_event_targets::ServerNotificationThreadTarget;
 use super::app_server_event_targets::server_notification_thread_target;
 use crate::AppServerTarget;
@@ -40,12 +41,32 @@ impl App {
         else {
             return;
         };
+        if matches!(
+            notification,
+            ServerNotification::TurnStarted(_)
+                | ServerNotification::ThreadClosed(_)
+                | ServerNotification::ThreadArchived(_)
+                | ServerNotification::ThreadDeleted(_)
+        ) {
+            self.agents_overview.blank_sessions.remove(&thread_id);
+        }
+        self.track_agents_overview_activity(thread_id, notification);
         let thread = self
             .agents_overview
             .threads
             .get_mut(&thread_id)
             .and_then(Option::as_mut);
         match notification {
+            ServerNotification::ThreadTokenUsageUpdated(usage) => {
+                if self.agents_overview.threads.contains_key(&thread_id) {
+                    self.agents_overview
+                        .usage
+                        .entry(thread_id)
+                        .or_default()
+                        .tokens = Some(usage.token_usage.total.clone());
+                    self.repaint_agents_overview();
+                }
+            }
             ServerNotification::ThreadStarted(started) => {
                 if started.thread.ephemeral {
                     return;
@@ -55,13 +76,31 @@ impl App {
                 self.agents_overview.threads.insert(thread_id, Some(thread));
             }
             ServerNotification::ThreadArchived(_) | ServerNotification::ThreadDeleted(_) => {
+                self.agents_overview
+                    .selected_permission_profiles
+                    .remove(&thread_id);
+                self.agents_overview.activity.remove(&thread_id);
+                self.agents_overview.last_messages.remove(&thread_id);
+                self.agents_overview.usage.remove(&thread_id);
                 self.agents_overview.threads.remove(&thread_id);
                 self.agents_overview.refresh_thread_ids.remove(&thread_id);
             }
             ServerNotification::ThreadClosed(_) => {
+                self.agents_overview.activity.remove(&thread_id);
+                if let Some(usage) = self.agents_overview.usage.get_mut(&thread_id) {
+                    usage.tokens = None;
+                }
                 if let Some(thread) = thread {
                     thread.status = ThreadStatus::NotLoaded;
                 }
+            }
+            ServerNotification::ThreadReverted(_) => {
+                self.agents_overview.activity.remove(&thread_id);
+                self.agents_overview.last_messages.remove(&thread_id);
+                if let Some(usage) = self.agents_overview.usage.get_mut(&thread_id) {
+                    usage.tokens = None;
+                }
+                self.repaint_agents_overview();
             }
             ServerNotification::ThreadStatusChanged(status) => {
                 if let Some(thread) = thread {
@@ -74,8 +113,24 @@ impl App {
                 }
             }
             ServerNotification::ThreadSettingsUpdated(settings) => {
+                if !self.pending_server_profiles.contains_key(&thread_id)
+                    && self
+                        .agents_overview
+                        .selected_permission_profiles
+                        .get(&thread_id)
+                        != settings
+                            .thread_settings
+                            .active_permission_profile
+                            .as_ref()
+                            .map(|profile| &profile.id)
+                {
+                    self.agents_overview
+                        .selected_permission_profiles
+                        .remove(&thread_id);
+                }
                 if let Some(thread) = thread {
                     thread.cwd.clone_from(&settings.thread_settings.cwd);
+                    thread.model = Some(settings.thread_settings.model.clone());
                     thread
                         .model_provider
                         .clone_from(&settings.thread_settings.model_provider);
@@ -83,7 +138,11 @@ impl App {
             }
             _ => return,
         }
-        if self.agents_overview.threads.contains_key(&thread_id) {
+        if !matches!(
+            notification,
+            ServerNotification::ThreadReverted(_) | ServerNotification::ThreadTokenUsageUpdated(_)
+        ) && self.agents_overview.threads.contains_key(&thread_id)
+        {
             self.agents_overview.refresh_thread_ids.insert(thread_id);
         }
         if self.agents_overview.request_id.is_some() {
@@ -151,6 +210,7 @@ impl App {
         let refresh_task = tokio::spawn(async move {
             let result = async {
                 let mut threads = HashMap::new();
+                let mut last_messages = HashMap::new();
                 let mut recent_seed_complete = true;
                 if !initialized {
                     let loaded = request_handle.request_typed::<ThreadLoadedListResponse>(
@@ -171,6 +231,7 @@ impl App {
                                 .request_typed::<ThreadListResponse>(ClientRequest::ThreadList {
                                     request_id: RequestId::String(Uuid::new_v4().to_string()),
                                     params: ThreadListParams {
+                                        originators: None,
                                         cursor,
                                         limit: Some(20),
                                         sort_key: Some(sort_key),
@@ -183,7 +244,7 @@ impl App {
                                         parent_thread_id: None,
                                         ancestor_thread_id: None,
                                         cwd: None,
-                                        use_state_db_only: false,
+                                        use_state_db_only: true,
                                         search_term: None,
                                     },
                                 })
@@ -281,6 +342,7 @@ impl App {
                             .await
                         {
                             Ok(mut response) => {
+                                let mut last_message = None;
                                 if let Ok(turns) = request_handle
                                     .request_typed::<ThreadTurnsListResponse>(
                                         ClientRequest::ThreadTurnsList {
@@ -297,14 +359,24 @@ impl App {
                                         },
                                     )
                                     .await
-                                    && let Some(ThreadItem::UserMessage { content, .. }) =
-                                        turns.data.first().and_then(|turn| turn.items.first())
+                                    && let Some(turn) = turns.data.first()
                                 {
-                                    response.thread.preview =
-                                        ChatWidget::user_message_display_from_inputs(content)
-                                            .message;
+                                    if let Some(ThreadItem::UserMessage { content, .. }) =
+                                        turn.items.first()
+                                    {
+                                        response.thread.preview =
+                                            ChatWidget::user_message_display_from_inputs(content)
+                                                .message;
+                                    }
+                                    last_message =
+                                        turn.items.iter().rev().find_map(|item| match item {
+                                            ThreadItem::AgentMessage { text, .. } => {
+                                                Some(preview_agent_message(text))
+                                            }
+                                            _ => None,
+                                        });
                                 }
-                                Some((thread_id, response.thread))
+                                Some((thread_id, response.thread, last_message))
                             }
                             Err(error) => {
                                 tracing::warn!(%thread_id, %error, "failed to read agent thread");
@@ -313,18 +385,26 @@ impl App {
                         }
                     });
                     if reads.len() >= 16
-                        && let Some(Ok(Some((thread_id, thread)))) = reads.join_next().await
+                        && let Some(Ok(Some((thread_id, thread, last_message)))) =
+                            reads.join_next().await
                     {
                         threads.insert(thread_id, Some(thread));
+                        if let Some(message) = last_message {
+                            last_messages.insert(thread_id, message);
+                        }
                     }
                 }
                 while let Some(result) = reads.join_next().await {
-                    if let Ok(Some((thread_id, thread))) = result {
+                    if let Ok(Some((thread_id, thread, last_message))) = result {
                         threads.insert(thread_id, Some(thread));
+                        if let Some(message) = last_message {
+                            last_messages.insert(thread_id, message);
+                        }
                     }
                 }
                 Ok(AgentsOverviewThreadRefresh {
                     threads,
+                    last_messages,
                     recent_seed_complete,
                 })
             }

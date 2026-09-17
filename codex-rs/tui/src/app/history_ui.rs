@@ -22,6 +22,14 @@ pub(super) struct ThreadUsageStatusHistory {
 
 impl App {
     pub(super) fn insert_history_cell(&mut self, tui: &mut tui::Tui, cell: Box<dyn HistoryCell>) {
+        if let Some(warnings) = cell
+            .as_any()
+            .downcast_ref::<history_cell::StartupWarningsCell>()
+        {
+            self.merge_startup_warnings(tui, warnings);
+            return;
+        }
+        let is_session_header = cell.as_any().is::<history_cell::SessionInfoCell>();
         let cell: Arc<dyn HistoryCell> = cell.into();
         if let Some(Overlay::Transcript(t)) = &mut self.overlay {
             t.insert_cell(cell.clone());
@@ -62,6 +70,9 @@ impl App {
         // A committed cell can unblock a settled /usage card that was waiting
         // behind a transient active cell or a provisional stream tail.
         self.chat_widget.request_pending_usage_output_insertion();
+        if is_session_header {
+            self.merge_startup_warnings(tui, &history_cell::StartupWarningsCell::default());
+        }
     }
 
     pub(super) fn finish_thread_usage_refresh(
@@ -186,9 +197,6 @@ impl App {
     }
 
     fn insert_pending_usage_output(&mut self, tui: &mut tui::Tui) {
-        if let Some(cell) = self.chat_widget.take_completed_token_activity_output() {
-            self.insert_history_cell(tui, Box::new(cell));
-        }
         if let Some(cell) = self.chat_widget.take_pending_rate_limit_reset_hint() {
             self.insert_history_cell(tui, Box::new(cell));
         }
@@ -313,7 +321,6 @@ impl App {
         self.deferred_history_lines.clear();
         self.has_emitted_history_lines = false;
         self.transcript_reflow.clear();
-        self.chat_widget.clear_pending_token_activity_refreshes();
         self.chat_widget.clear_pending_rate_limit_reset_hint();
         self.initial_history_replay_buffer = None;
         self.scrollback_has_older_history = false;

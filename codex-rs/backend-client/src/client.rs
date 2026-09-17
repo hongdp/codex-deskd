@@ -34,8 +34,12 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::fmt;
 
+pub(crate) mod analytics;
 mod chatgpt_turn_cost;
+pub(crate) mod plan_history;
+pub(crate) mod profile;
 mod rate_limit_resets;
+pub(crate) mod task_usage;
 mod thread_usage;
 pub(crate) mod turn_usage;
 
@@ -338,14 +342,17 @@ impl Client {
         Ok(self.get_rate_limits_with_reset_credits().await?.rate_limits)
     }
 
-    pub async fn get_accounts_check(&self) -> Result<AccountsCheckResponse> {
+    pub async fn get_accounts_check(
+        &self,
+    ) -> std::result::Result<AccountsCheckResponse, RequestError> {
         let url = match self.path_style {
             PathStyle::CodexApi => format!("{}/api/codex/accounts/check", self.base_url),
             PathStyle::ChatGptApi => format!("{}/wham/accounts/check", self.base_url),
         };
         let req = self.request(Method::GET, &url).headers(self.headers());
-        let (body, ct) = self.exec_request(req, "GET", &url).await?;
-        self.decode_json(&url, &ct, &body)
+        let (body, _) = self.exec_request_detailed(req, "GET", &url).await?;
+        serde_json::from_str(&body)
+            .map_err(|_| RequestError::Other(anyhow::anyhow!("Invalid accounts response.")))
     }
 
     pub async fn get_token_usage_profile(&self) -> Result<TokenUsageProfile> {
@@ -565,19 +572,28 @@ impl Client {
             rate_limit_reached_type,
         )];
         if let Some(additional) = payload.additional_rate_limits.flatten() {
-            snapshots.extend(additional.into_iter().map(|details| {
-                Self::make_rate_limit_snapshot(
-                    Some(details.metered_feature),
-                    Some(details.limit_name),
-                    details.rate_limit.flatten().map(|rate_limit| *rate_limit),
-                    /*credits*/ None,
-                    /*spend_control*/ None,
-                    plan_type,
-                    /*rate_limit_reached_type*/ None,
-                )
-            }));
+            snapshots.extend(
+                additional
+                    .into_iter()
+                    .map(|details| Self::make_additional_rate_limit_snapshot(details, plan_type)),
+            );
         }
         snapshots
+    }
+
+    fn make_additional_rate_limit_snapshot(
+        details: codex_backend_openapi_models::models::AdditionalRateLimitDetails,
+        plan_type: Option<AccountPlanType>,
+    ) -> RateLimitSnapshot {
+        Self::make_rate_limit_snapshot(
+            Some(details.metered_feature),
+            Some(details.limit_name),
+            details.rate_limit.flatten().map(|rate_limit| *rate_limit),
+            /*credits*/ None,
+            /*spend_control*/ None,
+            plan_type,
+            /*rate_limit_reached_type*/ None,
+        )
     }
 
     fn make_rate_limit_snapshot(
@@ -603,6 +619,7 @@ impl Client {
         RateLimitSnapshot {
             limit_id,
             limit_name,
+            normal_model_slug: None,
             primary,
             secondary,
             credits: Self::map_credits(credits),
@@ -953,6 +970,7 @@ mod tests {
             RateLimitSnapshot {
                 limit_id: Some("codex_other".to_string()),
                 limit_name: Some("codex_other".to_string()),
+                normal_model_slug: None,
                 primary: Some(RateLimitWindow {
                     used_percent: 90.0,
                     window_minutes: Some(60),
@@ -968,6 +986,7 @@ mod tests {
             RateLimitSnapshot {
                 limit_id: Some("codex".to_string()),
                 limit_name: Some("codex".to_string()),
+                normal_model_slug: None,
                 primary: Some(RateLimitWindow {
                     used_percent: 10.0,
                     window_minutes: Some(60),

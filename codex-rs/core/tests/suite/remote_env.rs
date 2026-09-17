@@ -38,7 +38,6 @@ use codex_extension_api::WorldStateContributionInput;
 use codex_extension_api::WorldStateSectionContribution;
 use codex_features::Feature;
 use codex_history::RolloutItem;
-use codex_history::RolloutLine;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
 use codex_network_proxy::NetworkProxyConfig;
@@ -384,7 +383,7 @@ async fn remote_test_env_exposes_target_shell_and_exec_guidance_to_model() -> Re
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn explicit_remote_shell_runs_in_remote_cwd() -> Result<()> {
+async fn approved_remote_shell_runs_in_remote_cwd() -> Result<()> {
     const CALL_ID: &str = "remote-explicit-shell";
 
     skip_if_no_remote_env!(Ok(()));
@@ -407,9 +406,15 @@ async fn explicit_remote_shell_runs_in_remote_cwd() -> Result<()> {
         "shell": shell,
         "login": false,
         "yield_time_ms": 10_000,
+        "sandbox_permissions": SandboxPermissions::RequireEscalated,
+        "justification": "Test target-native command approval cwd.",
     }))?;
-    let mut builder = test_codex();
+    let mut builder = test_codex().with_config(|config| {
+        config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
+        config.approvals_reviewer = ApprovalsReviewer::User;
+    });
     let test = builder.build_with_auto_env(&server).await?;
+    let selection = test.executor_environment().selection().clone();
     let response_mock = mount_sse_sequence(
         &server,
         vec![
@@ -427,16 +432,39 @@ async fn explicit_remote_shell_runs_in_remote_cwd() -> Result<()> {
     )
     .await;
 
-    test.submit_turn_with_environments(
+    submit_turn_with_approval_and_environments(
+        &test,
         "run the remote shell in the remote cwd",
-        Some(vec![TurnEnvironmentSelection {
-            environment_id: REMOTE_ENVIRONMENT_ID.to_string(),
-            cwd: test.executor_environment().selection().cwd.clone(),
-            workspace_roots: vec![test.executor_environment().selection().cwd.clone()],
-            config: EnvironmentConfigState::FromThread,
-        }]),
+        vec![selection.clone()],
+        AskForApproval::OnRequest,
     )
     .await?;
+
+    let event = wait_for_event(&test.codex, |event| {
+        matches!(
+            event,
+            EventMsg::ExecApprovalRequest(_) | EventMsg::TurnComplete(_)
+        )
+    })
+    .await;
+    let EventMsg::ExecApprovalRequest(approval) = event else {
+        panic!("expected remote command approval before completion: {event:?}");
+    };
+    assert_eq!(
+        approval.cwd.to_inferred_path_uri().as_ref(),
+        Some(&selection.cwd)
+    );
+    test.codex
+        .submit(Op::ExecApproval {
+            id: approval.effective_approval_id(),
+            turn_id: Some(approval.turn_id),
+            decision: ReviewDecision::Approved,
+        })
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
     let request = response_mock
         .last_request()
         .context("model should receive the command output")?;
@@ -478,7 +506,7 @@ async fn environment_permissions_follow_configuration_ownership() -> Result<()> 
     let owner_permission_profile = PermissionProfileSnapshot::active_with_profile_workspace_roots(
         PermissionProfile::read_only(),
         owner_active_profile.clone(),
-        vec![owner_profile_workspace_root.clone()],
+        vec![owner_profile_workspace_root.clone().into()],
     );
 
     let (shell, command) = match test_target_os() {
@@ -607,7 +635,7 @@ async fn environment_permissions_follow_configuration_ownership() -> Result<()> 
     );
     assert_eq!(
         snapshot.profile_workspace_roots,
-        vec![owner_profile_workspace_root.clone()]
+        vec![owner_profile_workspace_root.clone().into()]
     );
     assert_eq!(
         persisted_settings,
@@ -674,6 +702,104 @@ async fn environment_permissions_follow_configuration_ownership() -> Result<()> 
         )
     );
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn executor_profile_roots_survive_settings_restore_and_turn_recording() -> Result<()> {
+    let server = start_mock_server().await;
+    let test = test_codex()
+        .with_config(|config| {
+            config.workspace_roots = vec![config.cwd.clone()];
+            config
+                .permissions
+                .set_workspace_roots(config.workspace_roots.clone());
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    let runtime_roots = test.codex.config_snapshot().await.workspace_roots;
+    // Include a foreign convention on every host, plus case-distinct Windows roots.
+    let roots = [
+        "file:///workspace/profile",
+        "file:///C:/Work/Profile",
+        "file:///C:/work/profile",
+        "file://server/share/profile",
+    ]
+    .map(|root| PathUri::parse(root).unwrap());
+    let profile = PermissionProfile::workspace_write_with_path_uris(
+        &roots,
+        NetworkSandboxPolicy::Restricted,
+        /*exclude_tmpdir_env_var*/ true,
+        /*exclude_slash_tmp*/ true,
+    );
+    let expected_profile = profile.clone().materialize_project_roots_with_path_uris(
+        &test.executor_environment().selection().workspace_roots,
+    );
+    let profile_roots = roots.into_iter().map(Into::into).collect::<Vec<_>>();
+    let active_profile = ActivePermissionProfile::new("executor");
+    submit_thread_settings(
+        &test.codex,
+        ThreadSettingsOverrides {
+            permission_profile: Some(profile.clone()),
+            active_permission_profile: Some(active_profile.clone()),
+            profile_workspace_roots: Some(profile_roots.clone()),
+            ..Default::default()
+        },
+    )
+    .await?;
+    let saved = test.codex.restorable_thread_settings().await;
+    assert_eq!(saved.profile_workspace_roots, Some(profile_roots.clone()));
+    submit_thread_settings(
+        &test.codex,
+        ThreadSettingsOverrides {
+            permission_profile: Some(profile),
+            profile_workspace_roots: Some(Vec::new()),
+            ..Default::default()
+        },
+    )
+    .await?;
+    assert!(
+        test.codex
+            .config_snapshot()
+            .await
+            .profile_workspace_roots
+            .is_empty()
+    );
+    test.codex.restore_thread_settings(saved).await?;
+    let snapshot = test.codex.config_snapshot().await;
+    assert_eq!(
+        (snapshot.profile_workspace_roots, snapshot.workspace_roots),
+        (profile_roots, runtime_roots)
+    );
+
+    let response_mock = mount_sse_once(
+        &server,
+        sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
+    )
+    .await;
+    test.submit_text_turn("record the executor profile").await?;
+    response_mock.single_request();
+    test.codex.flush_rollout().await?;
+    let context = test
+        .codex
+        .load_history(/*include_archived*/ false)
+        .await?
+        .items
+        .into_iter()
+        .find_map(|item| match item {
+            RolloutItem::TurnContext(context) => Some(context),
+            _ => None,
+        })
+        .context("recorded turn context")?;
+    // The rollout retains compiled permissions, not the unprojectable root list.
+    assert_eq!(
+        (
+            context.permission_profile,
+            context.active_permission_profile,
+            context.workspace_roots
+        ),
+        (Some(expected_profile), Some(active_profile), None)
+    );
     Ok(())
 }
 
@@ -1078,7 +1204,7 @@ async fn deferred_executor_promotes_primary_environment_when_startup_completes()
     let rollout = fs::read_to_string(test.codex.rollout_path().context("rollout path")?)?;
     let world_state_patch = rollout
         .lines()
-        .map(serde_json::from_str::<RolloutLine>)
+        .map(codex_rollout::parse_rollout_line)
         .collect::<serde_json::Result<Vec<_>>>()?
         .into_iter()
         .filter_map(|line| match line.item {
@@ -2257,6 +2383,17 @@ async fn deferred_executor_spawn_agent_inherits_ready_step_environments(
         ],
     )
     .await;
+    // If the child finishes after the parent's last request, its completion
+    // notification triggers one more parent request. Allow either ordering.
+    mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-child-completion"),
+            ev_assistant_message("msg-child-completion", "done"),
+            ev_completed("resp-child-completion"),
+        ]),
+    )
+    .await;
     let mut builder = test_codex()
         .with_exec_server_url(format!("ws://{}", listener.local_addr()?))
         .with_config(move |config| {
@@ -2294,7 +2431,7 @@ async fn deferred_executor_spawn_agent_inherits_ready_step_environments(
             permission_profile: PermissionProfileSnapshot::active_with_profile_workspace_roots(
                 PermissionProfile::read_only(),
                 owner_active_profile.clone(),
-                vec![owner_profile_workspace_root.clone()],
+                vec![owner_profile_workspace_root.clone().into()],
             ),
             shell_environment_policy: Default::default(),
             windows_sandbox_level: WindowsSandboxLevel::from_config(&test.config),
@@ -2358,7 +2495,7 @@ async fn deferred_executor_spawn_agent_inherits_ready_step_environments(
         (
             PermissionProfile::read_only(),
             Some(owner_active_profile),
-            vec![owner_profile_workspace_root],
+            vec![owner_profile_workspace_root.into()],
         )
     );
     assert!(
@@ -2766,7 +2903,7 @@ async fn deferred_executor_compaction_preserves_then_updates_environment_once() 
     let rollout = fs::read_to_string(rollout_path)?;
     let world_state_items = rollout
         .lines()
-        .map(serde_json::from_str::<RolloutLine>)
+        .map(codex_rollout::parse_rollout_line)
         .collect::<serde_json::Result<Vec<_>>>()?
         .into_iter()
         .filter_map(|line| match line.item {
@@ -2803,7 +2940,8 @@ fn absolute_path(path: PathBuf) -> AbsolutePathBuf {
 
 fn read_only_sandbox(readable_root: PathBuf) -> FileSystemSandboxContext {
     let readable_root = absolute_path(readable_root);
-    FileSystemSandboxContext::from_permission_profile(PermissionProfile::from_runtime_permissions(
+    let cwd = PathUri::from_abs_path(&readable_root);
+    let permissions = PermissionProfile::from_runtime_permissions(
         &FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
             path: FileSystemPath::Path {
                 path: readable_root.into(),
@@ -2812,12 +2950,14 @@ fn read_only_sandbox(readable_root: PathBuf) -> FileSystemSandboxContext {
             missing_path_behavior: None,
         }]),
         NetworkSandboxPolicy::Restricted,
-    ))
+    );
+    FileSystemSandboxContext::from_permission_profile(permissions, cwd)
 }
 
 fn workspace_write_sandbox(writable_root: PathBuf) -> FileSystemSandboxContext {
     let writable_root = absolute_path(writable_root);
-    FileSystemSandboxContext::from_permission_profile(PermissionProfile::from_runtime_permissions(
+    let cwd = PathUri::from_abs_path(&writable_root);
+    let permissions = PermissionProfile::from_runtime_permissions(
         &FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
             path: FileSystemPath::Path {
                 path: writable_root.into(),
@@ -2826,7 +2966,8 @@ fn workspace_write_sandbox(writable_root: PathBuf) -> FileSystemSandboxContext {
             missing_path_behavior: None,
         }]),
         NetworkSandboxPolicy::Restricted,
-    ))
+    );
+    FileSystemSandboxContext::from_permission_profile(permissions, cwd)
 }
 
 fn assert_normalized_path_rejected(error: &std::io::Error) {
@@ -3287,7 +3428,16 @@ async fn remote_request_permissions_grant_unblocks_later_remote_exec() -> Result
         request.environment_id.as_deref(),
         Some(REMOTE_ENVIRONMENT_ID)
     );
-    assert_eq!(request.cwd.as_ref(), Some(&remote_cwd));
+    let request_cwd = request.cwd.expect("request cwd");
+    let expected_cwd = PathUri::from_abs_path(&remote_cwd);
+    assert_eq!(
+        request_cwd.as_str(),
+        expected_cwd.inferred_native_path_string()
+    );
+    let request_cwd: PathUri = request_cwd
+        .try_into()
+        .expect("request cwd should remain target-native");
+    assert_eq!(request_cwd, expected_cwd);
     assert_eq!(request.permissions, expected_permissions);
 
     test.codex
@@ -3986,3 +4136,6 @@ async fn remote_test_env_copy_preserves_symlink_source() -> Result<()> {
         .await?;
     Ok(())
 }
+
+#[path = "remote_env_failure_tests.rs"]
+mod failure_tests;
