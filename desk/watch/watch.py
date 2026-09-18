@@ -17,6 +17,7 @@ State (thread ids, fired keys) lives in desk/watch/state.json; the ledger of
 wakes and proposals in desk/watch/log/. Watch a woken thread live with
 `desk/bin/codex-desk resume <thread id>` or /agents in a daemon-attached TUI.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -74,6 +75,7 @@ def load_role(role: str) -> dict:
 
 # ------------------------------------------------------------------ quotes
 
+
 def last_price(ticker: str) -> float | None:
     try:
         import yfinance as yf  # noqa: PLC0415 — optional at import time
@@ -96,9 +98,14 @@ def breach(level: dict, px: float) -> str | None:
 
 # ------------------------------------------------------------------- wake
 
+
 def wake_message(level: dict, px: float, simulated: bool) -> str:
     verb = "BELOW" if level["side"] == "below" else "ABOVE"
-    sim = " (SIMULATED — watch self-test, treat the price as hypothetical)" if simulated else ""
+    sim = (
+        " (SIMULATED — watch self-test, treat the price as hypothetical)"
+        if simulated
+        else ""
+    )
     return (
         "Message Type: WAKE\n"
         "Source: price-watch\n"
@@ -125,7 +132,11 @@ def wake(role: str, message: str, state: dict) -> tuple[str, str]:
     thread_id = state["threads"].get(role)
     with Codex(config=config) as codex:
         if thread_id:
-            thread = codex.thread_resume(thread_id, approval_mode=ApprovalMode.deny_all, sandbox=Sandbox.read_only)
+            thread = codex.thread_resume(
+                thread_id,
+                approval_mode=ApprovalMode.deny_all,
+                sandbox=Sandbox.read_only,
+            )
         else:
             thread = codex.thread_start(
                 cwd=str(REPO),
@@ -157,7 +168,9 @@ def record(level: dict, px: float, thread_id: str, reply: str, simulated: bool) 
         )
 
 
-def handle(level: dict, px: float, state: dict, *, simulated: bool, dry_run: bool) -> None:
+def handle(
+    level: dict, px: float, state: dict, *, simulated: bool, dry_run: bool
+) -> None:
     key = breach(level, px)
     if key is None:
         return
@@ -167,7 +180,9 @@ def handle(level: dict, px: float, state: dict, *, simulated: bool, dry_run: boo
     if dry_run:
         print("--- would wake", level.get("role", "trader"), "with:\n" + msg)
         return
-    log(f"BREACH {key}: {level['ticker']} last {px:.2f} {level['side']} {level['price']}")
+    log(
+        f"BREACH {key}: {level['ticker']} last {px:.2f} {level['side']} {level['price']}"
+    )
     thread_id, reply = wake(level.get("role", "trader"), msg, state)
     record(level, px, thread_id, reply, simulated)
     if not simulated:
@@ -189,18 +204,32 @@ def poll(state: dict, *, dry_run: bool) -> None:
         if px is None:
             continue
         handle(lv, px, state, simulated=False, dry_run=dry_run)
-    summary = ", ".join(f"{t} {px:.2f}" if px else f"{t} n/a" for t, px in quotes.items())
+    summary = ", ".join(
+        f"{t} {px:.2f}" if px else f"{t} n/a" for t, px in quotes.items()
+    )
     log(f"poll: {summary}")
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--once", action="store_true", help="poll every level once")
     ap.add_argument("--loop", action="store_true", help="poll forever")
-    ap.add_argument("--interval", type=int, default=300, help="seconds between polls in --loop")
-    ap.add_argument("--fire", metavar="LEVEL_ID", help="simulate a breach of this level now")
-    ap.add_argument("--px", type=float, help="price to use with --fire (default: 1%% past the level)")
-    ap.add_argument("--dry-run", action="store_true", help="print the wake message; wake nobody")
+    ap.add_argument(
+        "--interval", type=int, default=300, help="seconds between polls in --loop"
+    )
+    ap.add_argument(
+        "--fire", metavar="LEVEL_ID", help="simulate a breach of this level now"
+    )
+    ap.add_argument(
+        "--px",
+        type=float,
+        help="price to use with --fire (default: 1%% past the level)",
+    )
+    ap.add_argument(
+        "--dry-run", action="store_true", help="print the wake message; wake nobody"
+    )
     a = ap.parse_args()
     state = load_state()
     if a.fire:
@@ -208,7 +237,11 @@ def main() -> int:
         if lv is None:
             print(f"no level with id {a.fire!r}", file=sys.stderr)
             return 2
-        px = a.px if a.px is not None else float(lv["price"]) * (0.99 if lv["side"] == "below" else 1.01)
+        px = (
+            a.px
+            if a.px is not None
+            else float(lv["price"]) * (0.99 if lv["side"] == "below" else 1.01)
+        )
         handle(lv, px, state, simulated=True, dry_run=a.dry_run)
         return 0
     if a.once:

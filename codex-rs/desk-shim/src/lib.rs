@@ -129,7 +129,7 @@ pub async fn start(config: ShimConfig) -> Result<()> {
         Err(err) => return Err(err).with_context(|| format!("desk-shim: bind {addr}")),
     };
     info!("desk-shim: serving /v1/responses on http://{addr}");
-    let app = server::router(config);
+    let app = server::router(config)?;
     tokio::spawn(async move {
         if let Err(err) = axum::serve(listener, app).await {
             warn!("desk-shim: server exited: {err}");

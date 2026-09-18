@@ -25,6 +25,11 @@ use axum::response::IntoResponse;
 use axum::response::Response;
 use axum::routing::get;
 use bytes::Bytes;
+use codex_http_client::ClientRouteClass;
+use codex_http_client::HttpClient;
+use codex_http_client::HttpClientFactory;
+use codex_http_client::HttpResponse;
+use codex_http_client::OutboundProxyPolicy;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use serde_json::Value;
@@ -43,22 +48,28 @@ const MAX_BODY: usize = 64 * 1024 * 1024;
 
 struct Shared {
     config: ShimConfig,
-    http: reqwest::Client,
+    /// Client for the ChatGPT backend every non-translated request is proxied to.
+    upstream_http: HttpClient,
+    /// Client for the Gemini endpoint the translator calls.
+    gemini_http: HttpClient,
 }
 
-pub(crate) fn router(config: ShimConfig) -> Router {
-    let http = reqwest::Client::builder()
-        .no_gzip()
-        .no_brotli()
-        .no_deflate()
-        .build()
-        .unwrap_or_default();
-    let state = Arc::new(Shared { config, http });
-    Router::new()
+pub(crate) fn router(config: ShimConfig) -> anyhow::Result<Router> {
+    // Reqwest's default proxy behavior, the same the shim had before it moved to
+    // the shared client. No crate in this workspace enables reqwest's
+    // compression features, so the transport neither advertises
+    // `accept-encoding` nor decodes bodies: upstream bytes are relayed as sent.
+    let factory = HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault);
+    let state = Arc::new(Shared {
+        upstream_http: factory.build_client(&config.upstream, ClientRouteClass::Other)?,
+        gemini_http: factory.build_client(GEMINI_BASE, ClientRouteClass::Other)?,
+        config,
+    });
+    Ok(Router::new()
         .route("/", get(health))
         .route("/health", get(health))
         .fallback(dispatch)
-        .with_state(state)
+        .with_state(state))
 }
 
 async fn health() -> Json<Value> {
@@ -113,14 +124,14 @@ async fn read_body(req: Request) -> Result<(Parts, Bytes), Response> {
 
 /// Send the request upstream unchanged (path preserved) and return the
 /// upstream response for streaming.
-async fn forward(st: &Shared, parts: &Parts, body: Bytes) -> Result<reqwest::Response, Response> {
+async fn forward(st: &Shared, parts: &Parts, body: Bytes) -> Result<HttpResponse, Response> {
     let path_and_query = parts
         .uri
         .path_and_query()
         .map(axum::http::uri::PathAndQuery::as_str)
         .unwrap_or("/");
     let url = format!("{}{}", st.config.upstream, path_and_query);
-    st.http
+    st.upstream_http
         .request(parts.method.clone(), &url)
         .headers(forward_headers(&parts.headers))
         .body(body)
@@ -132,7 +143,7 @@ async fn forward(st: &Shared, parts: &Parts, body: Bytes) -> Result<reqwest::Res
         })
 }
 
-fn relay(upstream: reqwest::Response) -> Response {
+fn relay(upstream: HttpResponse) -> Response {
     let status = upstream.status();
     let mut headers = HeaderMap::new();
     for (name, value) in upstream.headers() {
@@ -389,7 +400,7 @@ async fn stream_gemini(
 ) -> anyhow::Result<Attempt> {
     let url = format!("{GEMINI_BASE}/models/{model}:streamGenerateContent?alt=sse");
     let resp = st
-        .http
+        .gemini_http
         .post(&url)
         .header("x-goog-api-key", key)
         .json(body)
