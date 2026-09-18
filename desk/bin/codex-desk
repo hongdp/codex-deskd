@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Run the fork's codex against the desk CODEX_HOME. Headless-safe: stdin is
+# closed so `exec` never waits for "additional input".
+set -euo pipefail
+# NOTE: never add --ephemeral for multi-agent turns — an ephemeral root thread is
+# not registered, so spawn_agent fails with "no thread with id" (verified 2026-09-02).
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+export CODEX_HOME="$(cd "$HERE/.." && pwd -P)"
+export PATH="$HERE:$PATH"
+# Headless callers (cron, pipes) must not leave stdin open or `codex exec` blocks
+# reading it; an interactive terminal keeps its TTY so the TUI gets keyboard input.
+# Only `exec` gets the redirect: app-server / mcp-server speak JSON-RPC on stdin.
+if [ ! -t 0 ] && [ "${1:-}" = "exec" ]; then
+  exec "$HERE/codex" "$@" </dev/null
+fi
+exec "$HERE/codex" "$@"

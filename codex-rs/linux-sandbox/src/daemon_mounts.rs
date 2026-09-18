@@ -62,8 +62,12 @@ fn check_mounts(
         let [id, parent, mount_device, root, destination] = fields.as_slice() else {
             return Err(invalid());
         };
-        let root = mount_path(root)?;
-        let destination = mount_path(destination)?;
+        // Namespace mounts (nsfs) report roots like `mnt:[4026531840]`; they can
+        // never contain the socket directory, so skip them instead of failing
+        // the whole check on hosts with snap/lxd/docker namespaces (desk fork).
+        let (Ok(root), Ok(destination)) = (mount_path(root), mount_path(destination)) else {
+            continue;
+        };
         mounts.push((*id, *parent, *mount_device, root, destination));
     }
     let (location, containing_mount) = if let Some(mount_id) = mount_id {

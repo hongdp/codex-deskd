@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      { "hooks": [ { "type": "command", "command": "python3 \"$CODEX_HOME/hooks/skill_wall.py\"", "timeout": 10 } ] }
+    ]
+  }
+}

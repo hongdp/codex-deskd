@@ -2605,6 +2605,7 @@ dependencies = [
  "codex-config",
  "codex-core",
  "codex-core-plugins",
+ "codex-desk-shim",
  "codex-exec",
  "codex-exec-server",
  "codex-execpolicy",
@@ -3178,6 +3179,28 @@ dependencies = [
  "uuid",
  "wiremock",
  "zip",
+]
+
+[[package]]
+name = "codex-desk-shim"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.22.1",
+ "bytes",
+ "eventsource-stream",
+ "flate2",
+ "futures",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "toml 0.9.11+spec-1.1.0",
+ "tracing",
+ "uuid",
+ "zstd",
 ]
 
 [[package]]
