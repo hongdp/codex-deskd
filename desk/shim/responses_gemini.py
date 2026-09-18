@@ -18,6 +18,7 @@ Fidelity notes:
 Stdlib only. Run:  python3 desk/shim/responses_gemini.py --port 8397
 Key: $GEMINI_API_KEY, else the file <repo>/keys/gemini.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -57,8 +58,11 @@ def api_key() -> str:
 
 # ---------------------------------------------------------------- request side
 
+
 def _sig_encode(sig: str, attach: str) -> str:
-    return base64.b64encode(json.dumps({"sig": sig, "attach": attach}).encode()).decode()
+    return base64.b64encode(
+        json.dumps({"sig": sig, "attach": attach}).encode()
+    ).decode()
 
 
 def _sig_decode(blob: str | None) -> tuple[str, str] | None:
@@ -145,7 +149,12 @@ def build_contents(req: dict) -> tuple[list[str], list[dict]]:
                 args = json.loads(item.get("arguments") or "{}")
             except json.JSONDecodeError:
                 args = {"_raw": item.get("arguments")}
-            part = {"functionCall": {"name": name, "args": args if isinstance(args, dict) else {"value": args}}}
+            part = {
+                "functionCall": {
+                    "name": name,
+                    "args": args if isinstance(args, dict) else {"value": args},
+                }
+            }
             if pending_sig:
                 part["thoughtSignature"] = pending_sig
                 pending_sig = None
@@ -153,7 +162,15 @@ def build_contents(req: dict) -> tuple[list[str], list[dict]]:
         elif t == "function_call_output":
             call_id = item.get("call_id") or ""
             name = call_names.get(call_id, "tool")
-            push("user", {"functionResponse": {"name": name, "response": {"output": _function_output_text(item)}}})
+            push(
+                "user",
+                {
+                    "functionResponse": {
+                        "name": name,
+                        "response": {"output": _function_output_text(item)},
+                    }
+                },
+            )
         # local_shell_call, custom tool calls, etc. are not produced by this shim
     if not contents:
         contents.append({"role": "user", "parts": [{"text": ""}]})
@@ -168,7 +185,15 @@ def _sanitize_schema(s):
         return s
     out = {}
     for k, v in s.items():
-        if k in ("additionalProperties", "$schema", "strict", "default", "examples", "title", "$id"):
+        if k in (
+            "additionalProperties",
+            "$schema",
+            "strict",
+            "default",
+            "examples",
+            "title",
+            "$id",
+        ):
             continue
         if k == "type" and isinstance(v, list):
             non_null = [x for x in v if x != "null"]
@@ -225,7 +250,13 @@ def build_gemini_request(req: dict, sanitized: bool) -> dict:
     model = req.get("model", "")
     thinking: dict = {"includeThoughts": True}
     if model.startswith("gemini-3"):
-        level = {"minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "high"}.get(effort or "", None)
+        level = {
+            "minimal": "low",
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": "high",
+        }.get(effort or "", None)
         if level:
             thinking["thinkingLevel"] = level
     elif effort == "minimal":
@@ -236,6 +267,7 @@ def build_gemini_request(req: dict, sanitized: bool) -> dict:
 
 
 # --------------------------------------------------------------- response side
+
 
 class SseWriter:
     def __init__(self, wfile):
@@ -272,28 +304,57 @@ class Translator:
         if kind == "reasoning":
             self.item_id = f"rs_{uuid.uuid4().hex}"
             item = {"type": "reasoning", "id": self.item_id, "summary": []}
-            self.sse.emit("response.output_item.added", output_index=self.output_index, item=item)
-            self.sse.emit("response.reasoning_summary_part.added", item_id=self.item_id,
-                          output_index=self.output_index, summary_index=0,
-                          part={"type": "summary_text", "text": ""})
+            self.sse.emit(
+                "response.output_item.added", output_index=self.output_index, item=item
+            )
+            self.sse.emit(
+                "response.reasoning_summary_part.added",
+                item_id=self.item_id,
+                output_index=self.output_index,
+                summary_index=0,
+                part={"type": "summary_text", "text": ""},
+            )
         else:
             self.item_id = f"msg_{uuid.uuid4().hex}"
-            item = {"type": "message", "id": self.item_id, "role": "assistant", "status": "in_progress", "content": []}
-            self.sse.emit("response.output_item.added", output_index=self.output_index, item=item)
+            item = {
+                "type": "message",
+                "id": self.item_id,
+                "role": "assistant",
+                "status": "in_progress",
+                "content": [],
+            }
+            self.sse.emit(
+                "response.output_item.added", output_index=self.output_index, item=item
+            )
 
     def _close(self) -> None:
         if not self.open:
             return
         text = "".join(self.buf)
         if self.open == "reasoning":
-            item = {"type": "reasoning", "id": self.item_id,
-                    "summary": [{"type": "summary_text", "text": text}]}
-            self.sse.emit("response.reasoning_summary_text.done", item_id=self.item_id,
-                          output_index=self.output_index, summary_index=0, text=text)
+            item = {
+                "type": "reasoning",
+                "id": self.item_id,
+                "summary": [{"type": "summary_text", "text": text}],
+            }
+            self.sse.emit(
+                "response.reasoning_summary_text.done",
+                item_id=self.item_id,
+                output_index=self.output_index,
+                summary_index=0,
+                text=text,
+            )
         else:
-            item = {"type": "message", "id": self.item_id, "role": "assistant", "status": "completed",
-                    "content": [{"type": "output_text", "text": text, "annotations": []}]}
-        self.sse.emit("response.output_item.done", output_index=self.output_index, item=item)
+            item = {
+                "type": "message",
+                "id": self.item_id,
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": text, "annotations": []}],
+            }
+        self.sse.emit(
+            "response.output_item.done", output_index=self.output_index, item=item
+        )
         self.output_index += 1
         self.open = None
         if self.pending_sig and self.open is None:
@@ -302,10 +363,18 @@ class Translator:
             self.pending_sig = None
 
     def _emit_sig_item(self, sig: str, attach: str) -> None:
-        item = {"type": "reasoning", "id": f"rs_{uuid.uuid4().hex}", "summary": [],
-                "encrypted_content": _sig_encode(sig, attach)}
-        self.sse.emit("response.output_item.added", output_index=self.output_index, item=item)
-        self.sse.emit("response.output_item.done", output_index=self.output_index, item=item)
+        item = {
+            "type": "reasoning",
+            "id": f"rs_{uuid.uuid4().hex}",
+            "summary": [],
+            "encrypted_content": _sig_encode(sig, attach),
+        }
+        self.sse.emit(
+            "response.output_item.added", output_index=self.output_index, item=item
+        )
+        self.sse.emit(
+            "response.output_item.done", output_index=self.output_index, item=item
+        )
         self.output_index += 1
 
     def part(self, p: dict) -> None:
@@ -315,11 +384,20 @@ class Translator:
             if sig:
                 self._emit_sig_item(sig, "next")
             fc = p["functionCall"]
-            item = {"type": "function_call", "id": f"fc_{uuid.uuid4().hex}",
-                    "call_id": f"call_{uuid.uuid4().hex[:24]}", "name": fc.get("name", ""),
-                    "arguments": json.dumps(fc.get("args") or {}, ensure_ascii=False), "status": "completed"}
-            self.sse.emit("response.output_item.added", output_index=self.output_index, item=item)
-            self.sse.emit("response.output_item.done", output_index=self.output_index, item=item)
+            item = {
+                "type": "function_call",
+                "id": f"fc_{uuid.uuid4().hex}",
+                "call_id": f"call_{uuid.uuid4().hex[:24]}",
+                "name": fc.get("name", ""),
+                "arguments": json.dumps(fc.get("args") or {}, ensure_ascii=False),
+                "status": "completed",
+            }
+            self.sse.emit(
+                "response.output_item.added", output_index=self.output_index, item=item
+            )
+            self.sse.emit(
+                "response.output_item.done", output_index=self.output_index, item=item
+            )
             self.output_index += 1
             return
         text = p.get("text")
@@ -330,13 +408,23 @@ class Translator:
         if p.get("thought"):
             self._open("reasoning")
             self.buf.append(text)
-            self.sse.emit("response.reasoning_summary_text.delta", item_id=self.item_id,
-                          output_index=self.output_index, summary_index=0, delta=text)
+            self.sse.emit(
+                "response.reasoning_summary_text.delta",
+                item_id=self.item_id,
+                output_index=self.output_index,
+                summary_index=0,
+                delta=text,
+            )
         else:
             self._open("message")
             self.buf.append(text)
-            self.sse.emit("response.output_text.delta", item_id=self.item_id,
-                          output_index=self.output_index, content_index=0, delta=text)
+            self.sse.emit(
+                "response.output_text.delta",
+                item_id=self.item_id,
+                output_index=self.output_index,
+                content_index=0,
+                delta=text,
+            )
         if sig:
             self.pending_sig = sig
 
@@ -346,18 +434,32 @@ class Translator:
         cand = usage_meta.get("candidatesTokenCount", 0)
         thoughts = usage_meta.get("thoughtsTokenCount", 0)
         cached = usage_meta.get("cachedContentTokenCount", 0)
-        usage = {"input_tokens": prompt, "output_tokens": cand + thoughts,
-                 "total_tokens": usage_meta.get("totalTokenCount", prompt + cand + thoughts),
-                 "input_tokens_details": {"cached_tokens": cached},
-                 "output_tokens_details": {"reasoning_tokens": thoughts}}
-        self.sse.emit("response.completed", response={"id": self.rid, "object": "response",
-                                                      "status": "completed", "usage": usage})
+        usage = {
+            "input_tokens": prompt,
+            "output_tokens": cand + thoughts,
+            "total_tokens": usage_meta.get("totalTokenCount", prompt + cand + thoughts),
+            "input_tokens_details": {"cached_tokens": cached},
+            "output_tokens_details": {"reasoning_tokens": thoughts},
+        }
+        self.sse.emit(
+            "response.completed",
+            response={
+                "id": self.rid,
+                "object": "response",
+                "status": "completed",
+                "usage": usage,
+            },
+        )
 
 
 def gemini_stream(model: str, body: dict, key: str):
     url = f"{GEMINI_BASE}/models/{model}:streamGenerateContent?alt=sse"
-    req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
-                                 headers={"Content-Type": "application/json", "x-goog-api-key": key})
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json", "x-goog-api-key": key},
+    )
     resp = urllib.request.urlopen(req, timeout=600)
     for raw in resp:
         line = raw.decode("utf-8", "replace").rstrip("\r\n")
@@ -399,8 +501,10 @@ class Handler(BaseHTTPRequestHandler):
         rid = f"resp_{uuid.uuid4().hex}"
         if DUMP_DIR:
             Path(DUMP_DIR).mkdir(parents=True, exist_ok=True)
-            (Path(DUMP_DIR) / f"{time.strftime('%Y%m%d-%H%M%S')}-{rid[-8:]}.request.json").write_text(
-                json.dumps(req, ensure_ascii=False, indent=1))
+            (
+                Path(DUMP_DIR)
+                / f"{time.strftime('%Y%m%d-%H%M%S')}-{rid[-8:]}.request.json"
+            ).write_text(json.dumps(req, ensure_ascii=False, indent=1))
         model = req.get("model", "gemini-3.1-pro-preview")
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -408,7 +512,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
         sse = SseWriter(self.wfile)
-        sse.emit("response.created", response={"id": rid, "object": "response", "status": "in_progress"})
+        sse.emit(
+            "response.created",
+            response={"id": rid, "object": "response", "status": "in_progress"},
+        )
         tr = Translator(sse, rid)
         n_items = len(req.get("input") or [])
         n_tools = len(req.get("tools") or [])
@@ -433,16 +540,29 @@ class Handler(BaseHTTPRequestHandler):
                     break
                 except urllib.error.HTTPError as e:
                     detail = e.read().decode("utf-8", "replace")
-                    if e.code == 400 and attempt == 0 and "parameters" in detail and tr.output_index == 0:
+                    if (
+                        e.code == 400
+                        and attempt == 0
+                        and "parameters" in detail
+                        and tr.output_index == 0
+                    ):
                         log("400 on schema, retrying with sanitized parameters")
                         continue
                     raise RuntimeError(f"gemini {e.code}: {detail[:800]}") from None
             tr.finish(usage_meta)
-            log(f"<- done items={tr.output_index} usage={usage_meta.get('totalTokenCount')}")
+            log(
+                f"<- done items={tr.output_index} usage={usage_meta.get('totalTokenCount')}"
+            )
         except Exception as e:  # noqa: BLE001 — surface to Codex as response.failed
             log(f"!! {e}")
-            sse.emit("response.failed", response={"id": rid, "status": "failed",
-                                                  "error": {"code": "shim_error", "message": str(e)[:2000]}})
+            sse.emit(
+                "response.failed",
+                response={
+                    "id": rid,
+                    "status": "failed",
+                    "error": {"code": "shim_error", "message": str(e)[:2000]},
+                },
+            )
         finally:
             try:
                 self.wfile.flush()
